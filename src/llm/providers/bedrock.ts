@@ -1,0 +1,225 @@
+/**
+ * Bedrock Provider — AWS Bedrock Converse API wrapper for Sentinel decisions.
+ *
+ * Uses Llama 3.1 70B for real-time FIRE/BUFFER/DROP decisions in Phase 2.
+ * Supports tool use (pre-fetch hints) via Bedrock's tool_use block mapping.
+ *
+ * Relies on AwsClientFactory for client lifecycle — no standalone client init.
+ */
+
+import type {
+    LLMProvider,
+    ChatParams,
+    ChatResponse,
+    ToolChatParams,
+    ToolChatResponse,
+    ToolCall,
+    TokenUsage,
+} from '../provider.js'
+import type {
+    ConverseOutput,
+    SystemContentBlock,
+    Message as BedrockMessage,
+    ToolConfiguration,
+    TokenUsage as BedrockTokenUsage,
+    StopReason,
+} from '@aws-sdk/client-bedrock-runtime'
+import { AwsClientFactory } from '../../aws/aws-clients.js'
+
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+const DEFAULT_MODEL = 'meta.llama3-1-70b-instruct-v1:0'
+const DEFAULT_MAX_TOKENS = 1024
+const DEFAULT_TEMPERATURE = 0.3
+const TIMEOUT_MS = 30_000
+
+// ─── Bedrock Provider ───────────────────────────────────────────────────────
+
+export class BedrockProvider implements LLMProvider {
+    readonly name = 'bedrock'
+    private readonly clients: AwsClientFactory
+    private readonly modelId: string
+
+    constructor(clients: AwsClientFactory, modelId?: string) {
+        this.clients = clients
+        this.modelId = modelId ?? process.env.SENTINEL_BEDROCK_MODEL_ID ?? DEFAULT_MODEL
+    }
+
+    async isAvailable(): Promise<boolean> {
+        const client = await this.clients.getBedrock()
+        return client !== null
+    }
+
+    async chat(params: ChatParams): Promise<ChatResponse> {
+        const start = Date.now()
+        const client = await this.clients.getBedrock()
+        if (!client) {
+            throw new Error('[Bedrock] Client not available — AWS not configured')
+        }
+
+        const { ConverseCommand } = await import('@aws-sdk/client-bedrock-runtime')
+
+        const { system, messages } = buildConverseMessages(params.messages, params.systemPrompt)
+
+        const command = new ConverseCommand({
+            modelId: params.model || this.modelId,
+            system,
+            messages,
+            inferenceConfig: {
+                maxTokens: params.maxTokens ?? DEFAULT_MAX_TOKENS,
+                temperature: params.temperature ?? DEFAULT_TEMPERATURE,
+            },
+        })
+
+        const response = await client.send(command, {
+            abortSignal: AbortSignal.timeout(TIMEOUT_MS),
+        })
+
+        const content = extractTextContent(response.output)
+        const usage = extractUsage(response.usage)
+
+        console.log(`[Bedrock] chat complete — ${usage.inputTokens}in/${usage.outputTokens}out ${Date.now() - start}ms`)
+
+        return { content, usage, latencyMs: Date.now() - start }
+    }
+
+    async chatWithTools(params: ToolChatParams): Promise<ToolChatResponse> {
+        const start = Date.now()
+        const client = await this.clients.getBedrock()
+        if (!client) {
+            throw new Error('[Bedrock] Client not available — AWS not configured')
+        }
+
+        const { ConverseCommand } = await import('@aws-sdk/client-bedrock-runtime')
+
+        const { system, messages } = buildConverseMessages(params.messages, params.systemPrompt)
+        const toolConfig = buildToolConfig(params.tools)
+
+        const command = new ConverseCommand({
+            modelId: params.model || this.modelId,
+            system,
+            messages,
+            toolConfig,
+            inferenceConfig: {
+                maxTokens: params.maxTokens ?? DEFAULT_MAX_TOKENS,
+                temperature: params.temperature ?? DEFAULT_TEMPERATURE,
+            },
+        })
+
+        const response = await client.send(command, {
+            abortSignal: AbortSignal.timeout(TIMEOUT_MS),
+        })
+
+        const content = extractTextContent(response.output)
+        const toolCalls = extractToolCalls(response.output)
+        const usage = extractUsage(response.usage)
+        const stopReason = mapStopReason(response.stopReason)
+
+        console.log(`[Bedrock] chatWithTools complete — tools=${toolCalls.length} ${usage.inputTokens}in/${usage.outputTokens}out ${Date.now() - start}ms`)
+
+        return { content, toolCalls, stopReason, usage, latencyMs: Date.now() - start }
+    }
+}
+
+// ─── Message Conversion ─────────────────────────────────────────────────────
+
+function buildConverseMessages(
+    messages: ChatParams['messages'],
+    systemPrompt?: string,
+): { system: SystemContentBlock[] | undefined; messages: BedrockMessage[] } {
+    const system: SystemContentBlock[] = []
+    const converse: BedrockMessage[] = []
+
+    if (systemPrompt) {
+        system.push({ text: systemPrompt })
+    }
+
+    for (const msg of messages) {
+        if (msg.role === 'system') {
+            if (!systemPrompt) {
+                system.push({ text: msg.content })
+            }
+            continue
+        }
+
+        // Bedrock only supports 'user' and 'assistant' roles in messages
+        const role = msg.role === 'user' || msg.role === 'tool' ? 'user' : 'assistant'
+        converse.push({
+            role,
+            content: [{ text: msg.content }],
+        })
+    }
+
+    return {
+        system: system.length > 0 ? system : undefined,
+        messages: converse,
+    }
+}
+
+// ─── Tool Config Conversion ─────────────────────────────────────────────────
+
+function buildToolConfig(tools: ToolChatParams['tools']): ToolConfiguration {
+    return {
+        tools: tools.map(tool => ({
+            toolSpec: {
+                name: tool.function.name,
+                description: tool.function.description,
+                inputSchema: {
+                    json: tool.function.parameters as Record<string, unknown>,
+                },
+            },
+        })) as ToolConfiguration['tools'],
+    }
+}
+
+// ─── Response Extraction ────────────────────────────────────────────────────
+
+function extractTextContent(output: ConverseOutput | undefined): string {
+    if (!output || !('message' in output)) return ''
+    const message = output.message
+    if (!message?.content) return ''
+
+    const textParts: string[] = []
+    for (const block of message.content) {
+        if ('text' in block && typeof block.text === 'string') {
+            textParts.push(block.text)
+        }
+    }
+    return textParts.join('')
+}
+
+function extractToolCalls(output: ConverseOutput | undefined): ToolCall[] {
+    if (!output || !('message' in output)) return []
+    const message = output.message
+    if (!message?.content) return []
+
+    const toolCalls: ToolCall[] = []
+    for (const block of message.content) {
+        if ('toolUse' in block && block.toolUse) {
+            toolCalls.push({
+                id: block.toolUse.toolUseId || '',
+                function: {
+                    name: block.toolUse.name || '',
+                    arguments: JSON.stringify(block.toolUse.input ?? {}),
+                },
+            })
+        }
+    }
+    return toolCalls
+}
+
+function extractUsage(usage: BedrockTokenUsage | undefined): TokenUsage {
+    if (!usage) return { inputTokens: 0, outputTokens: 0 }
+    return {
+        inputTokens: usage.inputTokens || 0,
+        outputTokens: usage.outputTokens || 0,
+    }
+}
+
+function mapStopReason(reason: StopReason | undefined): 'stop' | 'tool_use' | 'length' {
+    switch (reason) {
+        case 'tool_use': return 'tool_use'
+        case 'max_tokens': return 'length'
+        default: return 'stop'
+    }
+}
