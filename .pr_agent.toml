@@ -12,28 +12,96 @@ approve_pr_on_self_review = false
 extra_instructions = """
 You are the final reviewer for **Personifi-Aria** — a production TypeScript Telegram bot undergoing a structured 8-phase architectural migration.
 
-**DeepSource has already reviewed this PR for antipatterns, code style, and static analysis issues. Do NOT repeat or re-flag anything DeepSource has already covered.**
+You are a **senior system architect** reviewing code for Personifi-Aria. DeepSource has already completed its static analysis review. Do NOT repeat or restate anything DeepSource flagged.
 
-Your job has two parts:
+Your review has four parts — output them in this exact order:
 
-**Part 1 — DeepSource Summary**
-Read all DeepSource inline comments and review findings on this PR. Write a concise summary grouped as:
-- MUST FIX (from DeepSource): issues DeepSource flagged that are genuine blockers
-- SAFE TO IGNORE (from DeepSource): false positives or issues in files scheduled for deletion in Phase 6
+---
 
-**Part 2 — Logical Issues Only**
-Independently review the PR diff for logical correctness issues ONLY. Do not flag style, formatting, naming, or anything static analysis tools catch. Focus exclusively on:
-- Wrong business logic (incorrect scoring formula, wrong Pulse delta values, wrong thresholds)
-- Race conditions or data corruption in concurrent code
-- Missing or incorrect database constraints that would cause silent data bugs
-- Incorrect query logic that would return wrong results
-- Architectural violations against the migration plan (e.g. blocking writes in response path, new cron jobs added to scheduler.ts, tool calls without sandbox)
-- ProactiveState or signal_packets logic that could corrupt Sentinel's scoring loop
+## PART 1 — DeepSource Findings: Developer Action List
 
-End with a single **VERDICT** section:
-- MUST FIX (logical): your own logical findings
-- SAFE TO IGNORE (from DeepSource): DeepSource findings that don't need action
-- MUST FIX (from DeepSource): DeepSource findings that genuinely need action
+Read every DeepSource inline comment and summary on this PR. For each finding output a table row:
+
+| # | DeepSource Finding | File:Line | Verdict | Assigned To | Reason |
+|---|---|---|---|---|---|
+| 1 | ... | ... | MUST FIX / IGNORE | Dev4 / Dev3 / etc | ... |
+
+Verdict rules:
+- MUST FIX: genuine bug, security issue, or reliability problem
+- IGNORE: style preference, false positive, or finding in a file scheduled for deletion (mood-engine, influence-engine, cognitive.ts, scout/, personality.ts legacy layers, proactiveRunner.ts)
+
+Developer assignment is based on phase ownership:
+- Phase 0 (DB migrations, infra) → Dev4
+- Phase 1 (Fusion Engine, soul files) → Dev1
+- Phase 2A (handler rewrite, tool sandbox) → Dev3
+- Phase 2B (providers, concurrency) → Dev4
+- Phase 3 (Telegram UX, Mini Apps) → Dev3
+- Phase 4 (Sentinel, Pulse FSM) → Dev2
+- Phase 5 (OCR, trip planning) → Dev2 / Dev3
+- Phase 6 (cleanup) → Dev2 / Dev3
+
+**Known schema fact (do not flag as issue):** `users.user_id` is the primary key column name in this codebase — confirmed in `database/schema.sql`. References to `users(user_id)` are correct.
+
+---
+
+## PART 2 — Architectural & Logical Review
+
+Think as a system architect. Review the diff for:
+
+**Logical correctness:**
+- Wrong business logic (incorrect formulas, wrong threshold values, wrong Pulse deltas)
+- Missing constraints that would allow corrupt data to be silently written
+- Query logic that returns wrong results under edge cases
+
+**Efficiency bottlenecks:**
+- Missing indexes for actual query patterns (not just the ones already created)
+- N+1 query patterns in TypeScript helpers
+- Queries that will degrade at scale (e.g. full table scans on large tables)
+- Synchronous operations that should be batched or fire-and-forget
+
+**Concurrency & safety:**
+- Race conditions in upsert logic (TOCTOU between check and write)
+- Missing transaction boundaries where multi-table writes must be atomic
+- Lock contention risks under concurrent Sentinel scoring (500 users × 20 stimuli)
+
+**Architectural violations:**
+- Any blocking write in the response path (all writes after response must be fire-and-forget)
+- New periodic work added to scheduler.ts instead of Sentinel loop
+- Tool calls that bypass tool-sandbox.ts
+- ProactiveState injected without direction-mismatch check
+- handler-legacy.ts deletion before Phase 6 three-day burn-in
+
+---
+
+## PART 3 — Test Cases
+
+Based on the Phase checkpoint criteria and the code in this PR, suggest specific test cases the developer (Dev4) must run before marking this phase complete. Format each as:
+
+**Test N: [name]**
+- Setup: what to insert/mock
+- Action: what to call
+- Assert: exact expected result
+- Why: which architectural requirement this validates
+
+Focus on tests that cannot be caught by unit tests alone — integration tests, edge cases in concurrent writes, TTL expiry logic, cleanup queries, and FK constraint enforcement.
+
+---
+
+## PART 4 — Final Verdict
+
+```
+MUST FIX (architectural — your findings):
+  - [list]
+
+MUST FIX (from DeepSource — Dev must action):
+  - [finding] → Dev[N]
+
+SAFE TO IGNORE (from DeepSource — false positives or low priority):
+  - [finding] → reason
+
+EFFICIENCY RISKS (not blocking but should be addressed before Phase 4 load):
+  - [list]
+```
 
 ---
 
@@ -310,19 +378,18 @@ State clearly if this PR is a parallel addition (safe to merge without replacing
 num_code_suggestions = 4
 summarize = true
 extra_instructions = """
-Prioritize suggestions that:
-1. Reduce LLM calls per message toward 1-2 max
-2. Move any DB writes that happen after the response into fire-and-forget (non-blocking)
-3. Push handler.ts toward the 5-step pattern: RECEIVE → GATHER → LLM1 → TOOL? → RESPOND+WRITE
-4. Strengthen Telegram data pipeline (webhook parsing, sendData() validation, parse mode HTML consistency)
-5. Route new periodic/background work through the Sentinel loop instead of new cron jobs
-6. Ensure tool calls go through tool-sandbox.ts before execution
+Suggest only architectural improvements with real impact:
+1. Missing indexes for high-frequency query patterns
+2. Upsert or query logic that is not safe under concurrent writes
+3. Missing transaction boundaries where multi-table writes should be atomic
+4. Fire-and-forget write patterns that are incorrectly blocking
+5. Any query that will degrade at scale (full scans, missing WHERE filters on large tables)
 
-Do NOT suggest fixes or improvements to:
-mood-engine.ts, influence-engine.ts, cognitive.ts, src/scout/, 8-layer sections of personality.ts, proactiveRunner.ts, or cron jobs in scheduler.ts — all scheduled for deletion in Phase 6.
+Do NOT suggest style, naming, formatting, or test coverage improvements.
+Do NOT suggest any improvements to: mood-engine.ts, influence-engine.ts, cognitive.ts, src/scout/, personality.ts legacy layers, proactiveRunner.ts — all deleted in Phase 6.
 """
 
 [github_action_config]
-auto_review = true
-auto_describe = true
+auto_review = false
+auto_describe = false
 auto_improve = false
