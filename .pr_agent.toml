@@ -391,7 +391,3 @@ Do NOT suggest style, naming, formatting, or test coverage improvements.
 Do NOT suggest any improvements to: mood-engine.ts, influence-engine.ts, cognitive.ts, src/scout/, personality.ts legacy layers, proactiveRunner.ts — all deleted in Phase 6.
 """
 
-[github_action_config]
-auto_review = false
-auto_describe = false
-auto_improve = false
