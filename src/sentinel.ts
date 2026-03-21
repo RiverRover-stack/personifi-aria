@@ -761,6 +761,12 @@ export async function runCycle(
 ): Promise<CycleMetrics> {
     const startTime = Date.now()
 
+    // Gate: Together must be configured before Phase 1 can run
+    if (!await togetherProvider.isAvailable()) {
+        log.error('TOGETHER_API_KEY not configured — skipping cycle. Set TOGETHER_API_KEY to enable Sentinel.')
+        return emptyMetrics(startTime)
+    }
+
     // Fetch data
     const [users, stimuli] = await Promise.all([
         getActiveUsers(),

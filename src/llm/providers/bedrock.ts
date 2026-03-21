@@ -42,20 +42,50 @@ export class BedrockProvider implements LLMProvider {
     readonly name = 'bedrock'
     private readonly clients: AwsClientFactory
     private readonly modelId: string
+    // When SENTINEL_BEDROCK_REGION is set we create a dedicated client scoped to
+    // that region rather than mutating the global AwsConfig singleton (which would
+    // affect Intelligence, Archivist, and every other Bedrock caller).
+    private readonly regionOverride: string | undefined
+    private dedicatedClient: import('@aws-sdk/client-bedrock-runtime').BedrockRuntimeClient | null = null
 
     constructor(clients: AwsClientFactory, modelId?: string) {
         this.clients = clients
         this.modelId = modelId ?? process.env.SENTINEL_BEDROCK_MODEL_ID ?? DEFAULT_MODEL
+        this.regionOverride = process.env.SENTINEL_BEDROCK_REGION
+    }
+
+    private async getClient(): Promise<import('@aws-sdk/client-bedrock-runtime').BedrockRuntimeClient | null> {
+        if (!this.regionOverride) {
+            return this.clients.getBedrock()
+        }
+        // Lazy-init a dedicated client for this region override
+        if (!this.dedicatedClient) {
+            try {
+                const { BedrockRuntimeClient } = await import('@aws-sdk/client-bedrock-runtime')
+                const { getAwsConfig } = await import('../../aws/aws-config.js')
+                const config = getAwsConfig()
+                if (!config.enabled) return null
+                this.dedicatedClient = new BedrockRuntimeClient({
+                    region: this.regionOverride,
+                    credentials: config.credentials ?? undefined,
+                })
+                log.info({ region: this.regionOverride }, 'sentinel bedrock client initialized with region override')
+            } catch (err) {
+                log.error({ err }, 'failed to initialize sentinel bedrock client')
+                return null
+            }
+        }
+        return this.dedicatedClient
     }
 
     async isAvailable(): Promise<boolean> {
-        const client = await this.clients.getBedrock()
+        const client = await this.getClient()
         return client !== null
     }
 
     async chat(params: ChatParams): Promise<ChatResponse> {
         const start = Date.now()
-        const client = await this.clients.getBedrock()
+        const client = await this.getClient()
         if (!client) {
             throw new Error('[Bedrock] Client not available — AWS not configured')
         }
@@ -95,7 +125,7 @@ export class BedrockProvider implements LLMProvider {
 
     async chatWithTools(params: ToolChatParams): Promise<ToolChatResponse> {
         const start = Date.now()
-        const client = await this.clients.getBedrock()
+        const client = await this.getClient()
         if (!client) {
             throw new Error('[Bedrock] Client not available — AWS not configured')
         }
