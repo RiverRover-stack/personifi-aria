@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS proactive_state (
     data         JSONB NOT NULL DEFAULT '{}',
         -- raw stimulus payload (weather JSON, event details, etc.)
     result_ref   UUID,
-        -- FK to tool_results.id if Sentinel pre-fetched a tool result
+        -- FK to tool_results.id added via ALTER TABLE below (after tool_results is created)
     status       TEXT NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'stale', 'delivered', 'dismissed', 'expired')),
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS stimulus_cache (
         -- composite key e.g. 'openweather::bangalore' or 'events::indiranagar::2026-03-21'
     data_json   JSONB NOT NULL,
     fetched_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    ttl_seconds INT NOT NULL DEFAULT 1800,
+    ttl_seconds INT NOT NULL DEFAULT 1800 CHECK (ttl_seconds >= 0),
         -- default 30 min; callers may override per source
 
     CONSTRAINT uq_stimulus_cache_source_key UNIQUE (source, cache_key)
@@ -84,6 +84,18 @@ CREATE TABLE IF NOT EXISTS tool_results (
 
     CONSTRAINT uq_tool_results_user_tool_args UNIQUE (user_id, tool_name, args_hash)
 );
+
+-- Deferred FK: proactive_state.result_ref → tool_results.id
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'fk_proactive_state_result_ref'
+    ) THEN
+        ALTER TABLE proactive_state
+            ADD CONSTRAINT fk_proactive_state_result_ref
+            FOREIGN KEY (result_ref) REFERENCES tool_results(id) ON DELETE SET NULL;
+    END IF;
+END $$;
 
 -- Alpha lookup: find unused pre-fetched result for a user + tool
 CREATE INDEX IF NOT EXISTS idx_tool_results_lookup

@@ -109,6 +109,7 @@ export async function upsertProactiveState(
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (user_id, stimulus_key)
          DO UPDATE SET
+           stimulus_type = EXCLUDED.stimulus_type,
            score       = EXCLUDED.score,
            data        = EXCLUDED.data,
            result_ref  = EXCLUDED.result_ref,
@@ -181,17 +182,23 @@ export async function upsertStimulusCache(
 // tool_results
 // ─────────────────────────────────────────────
 
-export async function getToolResult(
+export async function claimToolResult(
     pool: Pool,
     userId: string,
     toolName: string,
     argsHash: string
 ): Promise<ToolResultRow | null> {
     const { rows } = await pool.query<ToolResultRow>(
-        `SELECT * FROM tool_results
-         WHERE user_id = $1 AND tool_name = $2 AND args_hash = $3
-           AND NOT used
-           AND (expires_at IS NULL OR expires_at > NOW())`,
+        `UPDATE tool_results SET used = TRUE
+         WHERE id = (
+           SELECT id FROM tool_results
+           WHERE user_id = $1 AND tool_name = $2 AND args_hash = $3
+             AND NOT used
+             AND (expires_at IS NULL OR expires_at > NOW())
+           LIMIT 1
+           FOR UPDATE SKIP LOCKED
+         )
+         RETURNING *`,
         [userId, toolName, argsHash]
     )
     return rows[0] ?? null
@@ -210,10 +217,6 @@ export async function insertToolResult(
         [data.user_id, data.tool_name, data.args_hash, data.result, data.expires_at]
     )
     return rows[0].id
-}
-
-export async function markToolResultUsed(pool: Pool, id: string): Promise<void> {
-    await pool.query(`UPDATE tool_results SET used = TRUE WHERE id = $1`, [id])
 }
 
 // ─────────────────────────────────────────────
