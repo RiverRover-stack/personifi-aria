@@ -1,13 +1,11 @@
 /**
- * Together AI Real-time Provider — raw fetch, no SDK dependency.
+ * Fireworks AI Provider — raw fetch, no SDK dependency.
  *
- * Used by:
- *   - Sentinel Phase 2 fallback (when Bedrock is unavailable)
- *   - Sentinel Phase 1 concurrent scoring (small batches < threshold)
- *   - Alpha reactive chat (#140 — same file, same interface, zero merge conflict)
+ * Used as a fallback provider when Together AI is unavailable.
+ * Fireworks exposes an OpenAI-compatible REST API.
  *
- * Together exposes an OpenAI-compatible REST API.
- * Model: meta-llama/Llama-3.3-70B-Instruct-Turbo (default)
+ * Model: accounts/fireworks/models/llama-v3p1-70b-instruct (default)
+ * Docs:  https://readme.fireworks.ai/reference/createchatcompletion
  */
 
 import type {
@@ -20,23 +18,23 @@ import type {
 } from '../provider.js'
 import { logger as rootLogger } from '../../logger.js'
 
-const log = rootLogger.child({ module: 'together' })
+const log = rootLogger.child({ module: 'fireworks' })
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const BASE_URL = 'https://api.together.xyz/v1'
-const DEFAULT_MODEL = 'meta-llama/Llama-3.3-70B-Instruct-Turbo'
+const BASE_URL = 'https://api.fireworks.ai/inference/v1'
+const DEFAULT_MODEL = 'accounts/fireworks/models/llama-v3p1-70b-instruct'
 const DEFAULT_MAX_TOKENS = 1024
 const DEFAULT_TEMPERATURE = 0.3
 const TIMEOUT_MS = 30_000
 
-// ─── Together Provider ──────────────────────────────────────────────────────
+// ─── Fireworks Provider ──────────────────────────────────────────────────────
 
-export class TogetherProvider implements LLMProvider {
-    readonly name = 'together'
+export class FireworksProvider implements LLMProvider {
+    readonly name = 'fireworks'
 
     async isAvailable(): Promise<boolean> {
-        return !!process.env.TOGETHER_API_KEY
+        return !!process.env.FIREWORKS_API_KEY
     }
 
     async chat(params: ChatParams): Promise<ChatResponse> {
@@ -53,7 +51,7 @@ export class TogetherProvider implements LLMProvider {
             body.response_format = { type: 'json_object' }
         }
 
-        const data = await togetherFetch('/chat/completions', body)
+        const data = await fireworksFetch('/chat/completions', body)
 
         const content = data.choices?.[0]?.message?.content || ''
         const usage = {
@@ -87,7 +85,7 @@ export class TogetherProvider implements LLMProvider {
             parallel_tool_calls: params.parallelToolCalls ?? true,
         }
 
-        const data = await togetherFetch('/chat/completions', body)
+        const data = await fireworksFetch('/chat/completions', body)
 
         const choice = data.choices?.[0]
         const content = choice?.message?.content || ''
@@ -119,9 +117,9 @@ export class TogetherProvider implements LLMProvider {
 
 // ─── HTTP Client ────────────────────────────────────────────────────────────
 
-async function togetherFetch(path: string, body: Record<string, unknown>): Promise<Record<string, any>> {
-    const apiKey = process.env.TOGETHER_API_KEY
-    if (!apiKey) throw new Error('[Together] TOGETHER_API_KEY not set')
+async function fireworksFetch(path: string, body: Record<string, unknown>): Promise<Record<string, any>> {
+    const apiKey = process.env.FIREWORKS_API_KEY
+    if (!apiKey) throw new Error('[Fireworks] FIREWORKS_API_KEY not set')
 
     const resp = await fetch(`${BASE_URL}${path}`, {
         method: 'POST',
@@ -135,9 +133,8 @@ async function togetherFetch(path: string, body: Record<string, unknown>): Promi
 
     if (!resp.ok) {
         const rawErr = await resp.text().catch(() => '')
-        // Truncate and strip any auth headers/tokens that Together may echo back
         const safeErr = rawErr.replace(/Bearer\s+[^\s"]+/gi, 'Bearer [redacted]').slice(0, 200)
-        const error: any = new Error(`[Together] ${resp.status}: ${safeErr}`)
+        const error: any = new Error(`[Fireworks] ${resp.status}: ${safeErr}`)
         error.status = resp.status
         throw error
     }

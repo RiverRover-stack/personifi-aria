@@ -176,9 +176,11 @@ function buildConverseMessages(
 
     for (const msg of messages) {
         if (msg.role === 'system') {
-            if (!systemPrompt) {
-                system.push({ text: msg.content })
-            }
+            // Always include system-role messages, even when systemPrompt param is also set.
+            // jsonMode prepends a JSON contract via systemPrompt, but the caller's
+            // system instructions (e.g. Sentinel scoring/decision prompts) must still
+            // reach Bedrock — dropping them causes the model to ignore its task spec.
+            system.push({ text: msg.content })
             continue
         }
 

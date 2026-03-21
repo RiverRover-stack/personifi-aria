@@ -16,6 +16,8 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { BedrockProvider } from './llm/providers/bedrock.js'
 import { TogetherProvider } from './llm/providers/together.js'
+import { FireworksProvider } from './llm/providers/fireworks.js'
+import { ProviderRouter } from './llm/provider-router.js'
 import {
     buildBatchFile,
     runScoringBatch,
@@ -39,11 +41,15 @@ const MEDIUM_SCORE_THRESHOLD = 0.6
 const SIGNAL_STALENESS_MINUTES = 30
 const FATIGUE_CAP = 0.8
 const PROACTIVE_COOLDOWN_MS = 2 * 60 * 60 * 1000  // 2 hours
-const BEDROCK_LATENCY_THRESHOLD_MS = 10_000        // fall back to Together if Bedrock exceeds 10s
 
 /** Adaptive sleep: shorter during peak hours, longer at night */
 const SLEEP_MS_PEAK = 30_000       // 30s during 8AM–10PM
 const SLEEP_MS_OFF_PEAK = 5 * 60_000  // 5min during 10PM–8AM
+
+// ─── Warn-once flags (avoid log spam on missing tables) ─────────────────────
+
+let warnedSignalPacketsMissing = false
+let warnedProactiveStateMissing = false
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -370,7 +376,6 @@ async function phase2Decisions(
     usersMap: Map<string, UserProfile>,
     decisionProvider: LLMProvider,
     onFire: FireCallback,
-    fallbackProvider?: LLMProvider,
 ): Promise<{ fireCount: number; bufferCount: number; dropCount: number; usage: TokenUsage }> {
     let fireCount = 0
     let bufferCount = 0
@@ -393,7 +398,6 @@ async function phase2Decisions(
                 stimuliMap,
                 usersMap,
                 decisionProvider,
-                fallbackProvider,
             )),
         )
 
@@ -436,7 +440,6 @@ async function processCandidate(
     stimuliMap: Map<string, Stimulus>,
     usersMap: Map<string, UserProfile>,
     provider: LLMProvider,
-    fallbackProvider?: LLMProvider,
 ): Promise<DecisionResult | null> {
     const user = usersMap.get(candidate.userId)
     const stimulus = stimuliMap.get(candidate.stimulusId)
@@ -507,7 +510,7 @@ async function processCandidate(
         }
     }
 
-    // LLM decision — try primary provider, fall back on error or high latency
+    // LLM decision — ProviderRouter handles failover across Bedrock → Together → Fireworks
     const messages = buildDecisionMessages(candidate, user, stimulus, signalPacket)
     const chatParams = {
         model: '',  // provider default
@@ -518,33 +521,11 @@ async function processCandidate(
     }
 
     let response: Awaited<ReturnType<LLMProvider['chat']>> | null = null
-    let usedFallback = false
 
     try {
-        const callStart = Date.now()
         response = await provider.chat(chatParams)
-        const latency = Date.now() - callStart
-
-        if (latency > BEDROCK_LATENCY_THRESHOLD_MS && fallbackProvider) {
-            log.warn({ latencyMs: latency, userId: candidate.userId, stimulusId: candidate.stimulusId }, 'primary provider slow — retrying with fallback')
-            response = await fallbackProvider.chat(chatParams)
-            usedFallback = true
-        }
     } catch (err) {
-        if (fallbackProvider) {
-            log.warn({ err, userId: candidate.userId, stimulusId: candidate.stimulusId }, 'primary provider failed — retrying with fallback')
-            try {
-                response = await fallbackProvider.chat(chatParams)
-                usedFallback = true
-            } catch (fallbackErr) {
-                log.error({ err: fallbackErr, userId: candidate.userId, stimulusId: candidate.stimulusId }, 'fallback also failed')
-            }
-        } else {
-            log.error({ err, userId: candidate.userId, stimulusId: candidate.stimulusId }, 'decision failed')
-        }
-    }
-
-    if (!response) {
+        log.error({ err, userId: candidate.userId, stimulusId: candidate.stimulusId }, 'all providers failed — buffering candidate')
         return {
             userId: candidate.userId,
             stimulusId: candidate.stimulusId,
@@ -555,10 +536,6 @@ async function processCandidate(
             prefetchHint: null,
             usage: { inputTokens: 0, outputTokens: 0 },
         }
-    }
-
-    if (usedFallback) {
-        log.info({ userId: candidate.userId, stimulusId: candidate.stimulusId }, 'used fallback provider')
     }
 
     const parsed = safeParseDecision(response.content)
@@ -701,8 +678,13 @@ async function getLatestSignalPacket(userId: string): Promise<SignalPacket | nul
             createdAt: new Date(row.created_at),
         }
     } catch (err) {
-        // Table may not exist yet (#127) — graceful degradation
-        log.warn({ err }, 'signal_packets query failed (table may not exist)')
+        // Table may not exist yet (#127) — warn once, then debug to avoid log spam
+        if (!warnedSignalPacketsMissing) {
+            log.warn({ err }, 'signal_packets query failed (table may not exist) — suppressing further warnings')
+            warnedSignalPacketsMissing = true
+        } else {
+            log.debug({ err }, 'signal_packets query failed')
+        }
         return null
     }
 }
@@ -723,8 +705,13 @@ async function writeBufferDecision(result: DecisionResult): Promise<void> {
             JSON.stringify({ reasoning: result.reasoning, prefetchHint: result.prefetchHint }),
         ])
     } catch (err) {
-        // Table may not exist yet (#127) — graceful degradation
-        log.warn({ err }, 'proactive_state write failed (table may not exist)')
+        // Table may not exist yet (#127) — warn once, then debug to avoid log spam
+        if (!warnedProactiveStateMissing) {
+            log.warn({ err }, 'proactive_state write failed (table may not exist) — suppressing further warnings')
+            warnedProactiveStateMissing = true
+        } else {
+            log.debug({ err }, 'proactive_state write failed')
+        }
     }
 }
 
@@ -758,6 +745,7 @@ export async function runCycle(
     bedrockProvider: LLMProvider,
     togetherProvider: TogetherProvider,
     onFire: FireCallback,
+    fireworksProvider?: LLMProvider,
 ): Promise<CycleMetrics> {
     const startTime = Date.now()
 
@@ -792,25 +780,20 @@ export async function runCycle(
     // Phase 2: Real-time decisions (HIGH candidates only)
     const phase2Start = Date.now()
 
-    // Try Bedrock first; Together is always wired as per-candidate runtime fallback
-    let decisionProvider: LLMProvider = bedrockProvider
-    const bedrockAvailable = await bedrockProvider.isAvailable()
-    if (!bedrockAvailable) {
-        log.warn('bedrock unavailable at startup — using Together real-time for phase2')
-        decisionProvider = togetherProvider
-    }
-
-    // Pass togetherProvider as fallback so individual Bedrock errors/high-latency calls
-    // automatically retry via Together instead of defaulting to BUFFER
-    const phase2FallbackProvider = decisionProvider === bedrockProvider ? togetherProvider : undefined
+    // ProviderRouter: Bedrock → Together → Fireworks, with circuit-breaker per provider.
+    // Automatically skips tripped providers (>5 errors in 60s) and fails over to the next.
+    const decisionRouter = new ProviderRouter([
+        bedrockProvider,
+        togetherProvider,
+        ...(fireworksProvider ? [fireworksProvider] : []),
+    ])
 
     const phase2 = await phase2Decisions(
         phase1.high,
         stimuliMap,
         usersMap,
-        decisionProvider,
+        decisionRouter,
         onFire,
-        phase2FallbackProvider,
     )
     const phase2Duration = Date.now() - phase2Start
 
@@ -884,6 +867,7 @@ export async function startSentinelLoop(onFire?: FireCallback): Promise<void> {
         process.env.SENTINEL_BEDROCK_MODEL_ID,
     )
     const togetherProvider = new TogetherProvider()
+    const fireworksProvider = new FireworksProvider()
 
     // Default fire callback — stub until Alpha (#140) is wired
     const fireCallback: FireCallback = onFire ?? (async (userId, stimulusId, decision) => {
@@ -899,7 +883,7 @@ export async function startSentinelLoop(onFire?: FireCallback): Promise<void> {
 
     while (running) {
         try {
-            await runCycle(bedrockProvider, togetherProvider, fireCallback)
+            await runCycle(bedrockProvider, togetherProvider, fireCallback, fireworksProvider)
         } catch (err) {
             // Never crash the loop — log and continue
             log.error({ err }, 'cycle failed')

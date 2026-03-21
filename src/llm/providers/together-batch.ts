@@ -11,6 +11,9 @@
  */
 
 import type { Message, TokenUsage } from '../provider.js'
+import { logger as rootLogger } from '../../logger.js'
+
+const log = rootLogger.child({ module: 'together-batch' })
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -54,6 +57,13 @@ export interface BatchCycleResult {
     batchId: string
     durationMs: number
     failedCount: number
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** Strip Bearer tokens from error bodies before logging or throwing. */
+function redactErr(raw: string): string {
+    return raw.replace(/Bearer\s+[^\s"]+/gi, 'Bearer [redacted]').slice(0, 200)
 }
 
 // ─── Batch Client ───────────────────────────────────────────────────────────
@@ -109,13 +119,13 @@ export async function submitScoringBatch(jsonlContent: string): Promise<string> 
     })
 
     if (!uploadResp.ok) {
-        const err = await uploadResp.text().catch(() => '')
-        throw new Error(`[Together/Batch] File upload failed (${uploadResp.status}): ${err}`)
+        const raw = await uploadResp.text().catch(() => '')
+        throw new Error(`[Together/Batch] File upload failed (${uploadResp.status}): ${redactErr(raw)}`)
     }
 
     const uploadData = await uploadResp.json() as { id: string }
     const inputFileId = uploadData.id
-    console.log(`[Together/Batch] File uploaded: ${inputFileId}`)
+    log.info({ inputFileId }, 'file uploaded')
 
     // Step 2: Create the batch
     const batchResp = await fetch(`${BASE_URL}/batches`, {
@@ -133,12 +143,12 @@ export async function submitScoringBatch(jsonlContent: string): Promise<string> 
     })
 
     if (!batchResp.ok) {
-        const err = await batchResp.text().catch(() => '')
-        throw new Error(`[Together/Batch] Batch creation failed (${batchResp.status}): ${err}`)
+        const raw = await batchResp.text().catch(() => '')
+        throw new Error(`[Together/Batch] Batch creation failed (${batchResp.status}): ${redactErr(raw)}`)
     }
 
     const batchData = await batchResp.json() as { id: string }
-    console.log(`[Together/Batch] Batch created: ${batchData.id}`)
+    log.info({ batchId: batchData.id }, 'batch created')
 
     return batchData.id
 }
@@ -164,8 +174,8 @@ export async function pollBatchResults(
         })
 
         if (!resp.ok) {
-            const err = await resp.text().catch(() => '')
-            throw new Error(`[Together/Batch] Status check failed (${resp.status}): ${err}`)
+            const raw = await resp.text().catch(() => '')
+            throw new Error(`[Together/Batch] Status check failed (${resp.status}): ${redactErr(raw)}`)
         }
 
         const data = await resp.json() as Record<string, unknown>
@@ -178,7 +188,7 @@ export async function pollBatchResults(
             failedRequests: (data.request_counts as Record<string, number>)?.failed || 0,
         }
 
-        console.log(`[Together/Batch] ${batchId} — ${lastStatus.status} (${lastStatus.completedRequests}/${lastStatus.totalRequests})`)
+        log.debug({ batchId, status: lastStatus.status, completed: lastStatus.completedRequests, total: lastStatus.totalRequests }, 'batch poll')
 
         if (lastStatus.status === 'completed') return lastStatus
         if (lastStatus.status === 'failed' || lastStatus.status === 'expired' || lastStatus.status === 'cancelled') {
@@ -206,8 +216,8 @@ export async function downloadBatchResults(outputFileId: string): Promise<Scorin
     })
 
     if (!resp.ok) {
-        const err = await resp.text().catch(() => '')
-        throw new Error(`[Together/Batch] Download failed (${resp.status}): ${err}`)
+        const raw = await resp.text().catch(() => '')
+        throw new Error(`[Together/Batch] Download failed (${resp.status}): ${redactErr(raw)}`)
     }
 
     const text = await resp.text()
@@ -239,12 +249,12 @@ export function parseBatchOutput(jsonlText: string): ScoringResult[] {
             }
 
             if (entry.error) {
-                console.warn(`[Together/Batch] Request ${entry.custom_id} failed: ${entry.error.message}`)
+                log.warn({ customId: entry.custom_id, error: entry.error.message }, 'batch request failed')
                 continue
             }
 
             if (!entry.response || entry.response.status_code !== 200) {
-                console.warn(`[Together/Batch] Request ${entry.custom_id} non-200: ${entry.response?.status_code}`)
+                log.warn({ customId: entry.custom_id, statusCode: entry.response?.status_code }, 'batch request non-200')
                 continue
             }
 
@@ -254,7 +264,7 @@ export function parseBatchOutput(jsonlText: string): ScoringResult[] {
             const CUSTOM_ID_RE = /^(.+?)__(.+)$/
             const idMatch = CUSTOM_ID_RE.exec(entry.custom_id)
             if (!idMatch) {
-                console.warn(`[Together/Batch] Malformed custom_id: ${entry.custom_id}`)
+                log.warn({ customId: entry.custom_id }, 'malformed custom_id — skipping')
                 continue
             }
             const [, userId, stimulusId] = idMatch
@@ -274,7 +284,7 @@ export function parseBatchOutput(jsonlText: string): ScoringResult[] {
                 },
             })
         } catch (err) {
-            console.warn(`[Together/Batch] Failed to parse line: ${(err as Error).message}`)
+            log.warn({ err }, 'failed to parse batch output line')
         }
     }
 
@@ -292,7 +302,7 @@ export async function runScoringBatch(
     const start = Date.now()
 
     const jsonl = buildBatchFile(requests)
-    console.log(`[Together/Batch] Submitting ${requests.length} scoring requests`)
+    log.info({ count: requests.length }, 'submitting scoring batch')
 
     const batchId = await submitScoringBatch(jsonl)
     const status = await pollBatchResults(batchId, maxWaitMs)
@@ -310,7 +320,7 @@ export async function runScoringBatch(
     }
 
     const durationMs = Date.now() - start
-    console.log(`[Together/Batch] Cycle complete — ${results.length}/${requests.length} scored, ${status.failedRequests} failed, ${durationMs}ms`)
+    log.info({ scored: results.length, total: requests.length, failed: status.failedRequests, durationMs }, 'batch cycle complete')
 
     return {
         results,
@@ -335,7 +345,7 @@ function safeParseScore(content: string): { score: number; reasoning: string } {
             reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : '',
         }
     } catch {
-        console.warn(`[Together/Batch] Failed to parse score JSON: ${content.slice(0, 100)}`)
+        log.warn({ content: content.slice(0, 100) }, 'failed to parse score JSON')
         return { score: 0, reasoning: 'parse_error' }
     }
 }
