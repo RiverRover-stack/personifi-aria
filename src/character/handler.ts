@@ -759,6 +759,36 @@ export async function handleMessage(
       agendaStack = await agendaPlanner.getStack(user.userId, session.sessionId).catch(() => [])
     }
 
+    // ─── Phase 1: Parallel Fusion Engine decision (logging only) ────
+    // Runs alongside the existing pipeline — does NOT affect behavior.
+    // Feature flag: FUSION_ENGINE_ENABLED (default: false)
+    if (process.env.FUSION_ENGINE_ENABLED === 'true') {
+      import('../fusion/index.js').then(({ fusionReactiveDecision }) =>
+        fusionReactiveDecision(pool, {
+          userId: user.userId,
+          userMessage,
+          extractedSignals: {
+            topic: classification.detected_topic ?? null,
+            intent: classification.tool_hint ?? null,
+            sentiment: (classification.interest_signal === 'positive' || classification.interest_signal === 'committed') ? 'positive' : (classification.interest_signal === 'negative' ? 'negative' : 'neutral'),
+            entities: [],
+          },
+          toolRequest: null,
+          contextBundle: {
+            memories,
+            preferences,
+            graphNeighbors: graphContext,
+          },
+          pulseState: pulseEngagementState,
+          pulseScore: 0,
+        })
+          .then(output => {
+            console.log(`[Fusion/Reactive] user=${user.userId} route=${output.decision} confidence=${output.confidence.toFixed(2)} proactive=${output.proactiveContext?.length ?? 0} invalidated=${output.invalidatedStimuli.length}`)
+          })
+          .catch(err => console.error('[Fusion/Reactive] error:', (err as Error).message))
+      ).catch(err => console.error('[Fusion/Reactive] import error:', (err as Error).message))
+    }
+
     // ─── Step 7: Brain hooks — route message (Dev 1) ──────────────
     const brainHooks = getBrainHooks()
     const routeContext: RouteContext = {
