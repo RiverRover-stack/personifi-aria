@@ -37,6 +37,9 @@ services:
       - PROACTIVE_NUDGES_ENABLED=${PROACTIVE_NUDGES_ENABLED:-true}
       - DAILY_TIPS_ENABLED=${DAILY_TIPS_ENABLED:-true}
       - BROWSER_SCRAPING_ENABLED=${BROWSER_SCRAPING_ENABLED:-true}
+      # Fusion architecture (Phase 1)
+      - FUSION_ENGINE_ENABLED=${FUSION_ENGINE_ENABLED:-false}
+      - SOUL_V2_ENABLED=${SOUL_V2_ENABLED:-false}
       # Identity
       - LINK_CODE_EXPIRY_MINUTES=${LINK_CODE_EXPIRY_MINUTES:-10}
       # Travel tools

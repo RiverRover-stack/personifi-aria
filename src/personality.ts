@@ -47,6 +47,11 @@ let baseSoulFull: string | null = null
 let baseSoulSections: Record<string, string> = {}
 let lastSoulMtime: number = 0
 
+// ─── Soul v2 Cache (Phase 1: Fusion Architecture) ───────────────────────────
+
+let soulV2Content: string | null = null
+let lastSoulV2Mtime: number = 0
+
 /**
  * Post-onboarding guardrail:
  * when real-time place/tool data exists, Aria should lead with a specific recommendation
@@ -88,6 +93,35 @@ function buildEnvironmentalContext(location?: string): string {
     }
 
     return `## Environmental Context\n${lines.join('\n')}`
+}
+
+/**
+ * Load soul-v2.md for the compact dual-model personality.
+ * Feature-flagged via SOUL_V2_ENABLED env var (default: false).
+ */
+function loadSoulV2(): string | null {
+    if (process.env.SOUL_V2_ENABLED !== 'true') return null
+
+    const soulV2Path = path.join(process.cwd(), 'config', 'soul-v2.md')
+    if (!fs.existsSync(soulV2Path)) return null
+
+    const stat = fs.statSync(soulV2Path)
+    if (soulV2Content && stat.mtimeMs === lastSoulV2Mtime) {
+        return soulV2Content
+    }
+
+    soulV2Content = fs.readFileSync(soulV2Path, 'utf-8')
+    lastSoulV2Mtime = stat.mtimeMs
+
+    // Strip YAML frontmatter
+    if (soulV2Content.startsWith('---')) {
+        const endIdx = soulV2Content.indexOf('---', 3)
+        if (endIdx !== -1) {
+            soulV2Content = soulV2Content.slice(endIdx + 3).trim()
+        }
+    }
+
+    return soulV2Content
 }
 
 /**
@@ -384,6 +418,10 @@ export function composeSystemPrompt(opts: ComposeOptions): string {
  * Conditionally includes: First Contact (if not yet authenticated).
  */
 function buildStaticIdentity(opts: ComposeOptions): string {
+    // Phase 1: Use soul-v2.md as Layer 1 when SOUL_V2_ENABLED=true
+    const v2 = loadSoulV2()
+    if (v2) return v2
+
     const parts: string[] = []
 
     // Core personality sections (always included)
