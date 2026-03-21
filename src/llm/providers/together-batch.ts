@@ -76,8 +76,8 @@ export function buildBatchFile(requests: ScoringRequest[]): string {
                     role: m.role,
                     content: m.content,
                 })),
-                max_tokens: req.maxTokens ?? 256,
-                temperature: req.temperature ?? 0.2,
+                max_tokens: req.maxTokens ?? 50,
+                temperature: req.temperature ?? 0.1,
                 response_format: { type: 'json_object' },
             },
         }

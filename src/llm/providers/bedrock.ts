@@ -25,6 +25,9 @@ import type {
     StopReason,
 } from '@aws-sdk/client-bedrock-runtime'
 import { AwsClientFactory } from '../../aws/aws-clients.js'
+import { logger as rootLogger } from '../../logger.js'
+
+const log = rootLogger.child({ module: 'bedrock' })
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -59,7 +62,11 @@ export class BedrockProvider implements LLMProvider {
 
         const { ConverseCommand } = await import('@aws-sdk/client-bedrock-runtime')
 
-        const { system, messages } = buildConverseMessages(params.messages, params.systemPrompt)
+        const systemPrompt = params.jsonMode
+            ? prependJsonContract(params.systemPrompt)
+            : params.systemPrompt
+
+        const { system, messages } = buildConverseMessages(params.messages, systemPrompt)
 
         const command = new ConverseCommand({
             modelId: params.model || this.modelId,
@@ -75,10 +82,13 @@ export class BedrockProvider implements LLMProvider {
             abortSignal: AbortSignal.timeout(TIMEOUT_MS),
         })
 
-        const content = extractTextContent(response.output)
+        let content = extractTextContent(response.output)
+        if (params.jsonMode) {
+            content = extractFirstJson(content)
+        }
         const usage = extractUsage(response.usage)
 
-        console.log(`[Bedrock] chat complete — ${usage.inputTokens}in/${usage.outputTokens}out ${Date.now() - start}ms`)
+        log.debug({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, latencyMs: Date.now() - start }, 'chat complete')
 
         return { content, usage, latencyMs: Date.now() - start }
     }
@@ -115,7 +125,7 @@ export class BedrockProvider implements LLMProvider {
         const usage = extractUsage(response.usage)
         const stopReason = mapStopReason(response.stopReason)
 
-        console.log(`[Bedrock] chatWithTools complete — tools=${toolCalls.length} ${usage.inputTokens}in/${usage.outputTokens}out ${Date.now() - start}ms`)
+        log.debug({ tools: toolCalls.length, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, latencyMs: Date.now() - start }, 'chatWithTools complete')
 
         return { content, toolCalls, stopReason, usage, latencyMs: Date.now() - start }
     }
@@ -142,10 +152,22 @@ function buildConverseMessages(
             continue
         }
 
-        // Bedrock only supports 'user' and 'assistant' roles in messages
-        const role = msg.role === 'user' || msg.role === 'tool' ? 'user' : 'assistant'
+        if (msg.role === 'tool') {
+            // Map tool results to Bedrock's toolResult content block, preserving tool_call_id linkage
+            converse.push({
+                role: 'user',
+                content: [{
+                    toolResult: {
+                        toolUseId: msg.tool_call_id ?? '',
+                        content: [{ text: msg.content }],
+                    },
+                }],
+            })
+            continue
+        }
+
         converse.push({
-            role,
+            role: msg.role === 'user' ? 'user' : 'assistant',
             content: [{ text: msg.content }],
         })
     }
@@ -222,4 +244,20 @@ function mapStopReason(reason: StopReason | undefined): 'stop' | 'tool_use' | 'l
         case 'max_tokens': return 'length'
         default: return 'stop'
     }
+}
+
+/** Prepend a strict JSON-only contract to the system prompt for jsonMode calls. */
+function prependJsonContract(existing?: string): string {
+    const contract = 'You must respond with valid JSON only. No preamble, no explanation, no markdown fences. Output a single JSON object and nothing else.'
+    return existing ? `${contract}\n\n${existing}` : contract
+}
+
+/** Extract the first JSON object from a string, stripping any surrounding text. */
+function extractFirstJson(text: string): string {
+    const start = text.indexOf('{')
+    const end = text.lastIndexOf('}')
+    if (start !== -1 && end !== -1 && end > start) {
+        return text.slice(start, end + 1)
+    }
+    return text
 }

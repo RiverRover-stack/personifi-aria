@@ -25,6 +25,9 @@ import {
 import type { LLMProvider, TokenUsage, Message } from './llm/provider.js'
 import { AwsClientFactory } from './aws/aws-clients.js'
 import { getPool } from './character/session-store.js'
+import { logger as rootLogger } from './logger.js'
+
+const log = rootLogger.child({ module: 'sentinel' })
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -36,6 +39,7 @@ const MEDIUM_SCORE_THRESHOLD = 0.6
 const SIGNAL_STALENESS_MINUTES = 30
 const FATIGUE_CAP = 0.8
 const PROACTIVE_COOLDOWN_MS = 2 * 60 * 60 * 1000  // 2 hours
+const BEDROCK_LATENCY_THRESHOLD_MS = 10_000        // fall back to Together if Bedrock exceeds 10s
 
 /** Adaptive sleep: shorter during peak hours, longer at night */
 const SLEEP_MS_PEAK = 30_000       // 30s during 8AM–10PM
@@ -66,6 +70,8 @@ interface UserProfile {
 interface ScoredCandidate {
     userId: string
     stimulusId: string
+    stimulusType: string
+    stimulusKey: string
     score: number
     reasoning: string
 }
@@ -85,6 +91,8 @@ type Decision = 'FIRE' | 'BUFFER' | 'DROP'
 interface DecisionResult {
     userId: string
     stimulusId: string
+    stimulusType: string
+    stimulusKey: string
     decision: Decision
     reasoning: string
     prefetchHint: { tool: string; params: Record<string, unknown> } | null
@@ -132,9 +140,9 @@ function loadSoulPrompts(): void {
         scoringPrompt = phase1Match?.[1]?.trim() || 'Score this user-stimulus pair from 0.0 to 1.0. Output JSON: { "score": number, "reasoning": string }'
         decisionPrompt = phase2Match?.[1]?.trim() || 'Decide FIRE, BUFFER, or DROP. Output JSON: { "decision": string, "reasoning": string, "prefetch_hint": null }'
 
-        console.log('[Sentinel] Soul prompts loaded')
+        log.info('soul prompts loaded')
     } catch (err) {
-        console.error('[Sentinel] Failed to load soul prompts, using defaults:', (err as Error).message)
+        log.error({ err }, 'failed to load soul prompts, using defaults')
     }
 }
 
@@ -191,6 +199,7 @@ async function phase1BulkScoring(
     togetherProvider: TogetherProvider,
 ): Promise<{ high: ScoredCandidate[]; medium: ScoredCandidate[]; low: ScoredCandidate[]; preFilteredOut: number; usage: TokenUsage }> {
     const scoringRequests: ScoringRequest[] = []
+    const stimulusInfoMap = new Map(stimuli.map(s => [s.id, { type: s.type, key: s.key }]))
     let preFilteredOut = 0
 
     // Build scoring matrix with pre-filter
@@ -206,18 +215,18 @@ async function phase1BulkScoring(
                 userId: user.userId,
                 stimulusId: stimulus.id,
                 messages: buildScoringMessages(user, stimulus),
-                maxTokens: 256,
-                temperature: 0.2,
+                maxTokens: 50,
+                temperature: 0.1,
             })
         }
     }
 
     if (scoringRequests.length === 0) {
-        console.log('[Sentinel] Phase 1: No candidates after pre-filter')
+        log.info('phase1: no candidates after pre-filter')
         return { high: [], medium: [], low: [], preFilteredOut, usage: { inputTokens: 0, outputTokens: 0 } }
     }
 
-    console.log(`[Sentinel] Phase 1: ${scoringRequests.length} candidates (${preFilteredOut} pre-filtered out)`)
+    log.info({ total: scoringRequests.length, preFilteredOut }, 'phase1: candidates queued')
 
     let results: ScoringResult[]
     let totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 }
@@ -242,9 +251,12 @@ async function phase1BulkScoring(
     const low: ScoredCandidate[] = []
 
     for (const r of results) {
+        const stimInfo = stimulusInfoMap.get(r.stimulusId)
         const candidate: ScoredCandidate = {
             userId: r.userId,
             stimulusId: r.stimulusId,
+            stimulusType: stimInfo?.type ?? 'unknown',
+            stimulusKey: stimInfo?.key ?? r.stimulusId,
             score: r.score,
             reasoning: r.reasoning,
         }
@@ -254,7 +266,7 @@ async function phase1BulkScoring(
         else low.push(candidate)
     }
 
-    console.log(`[Sentinel] Phase 1 complete — HIGH=${high.length} MEDIUM=${medium.length} LOW=${low.length}`)
+    log.info({ high: high.length, medium: medium.length, low: low.length }, 'phase1 complete')
 
     return { high, medium, low, preFilteredOut, usage: totalUsage }
 }
@@ -291,7 +303,7 @@ async function runConcurrentScoring(
                         usage: response.usage,
                     } satisfies ScoringResult
                 } catch (err) {
-                    console.warn(`[Sentinel] Scoring failed for ${req.userId}/${req.stimulusId}: ${(err as Error).message}`)
+                    log.warn({ err, userId: req.userId, stimulusId: req.stimulusId }, 'scoring failed')
                     return {
                         userId: req.userId,
                         stimulusId: req.stimulusId,
@@ -358,6 +370,7 @@ async function phase2Decisions(
     usersMap: Map<string, UserProfile>,
     decisionProvider: LLMProvider,
     onFire: FireCallback,
+    fallbackProvider?: LLMProvider,
 ): Promise<{ fireCount: number; bufferCount: number; dropCount: number; usage: TokenUsage }> {
     let fireCount = 0
     let bufferCount = 0
@@ -365,11 +378,11 @@ async function phase2Decisions(
     const totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 }
 
     if (highCandidates.length === 0) {
-        console.log('[Sentinel] Phase 2: No HIGH candidates to process')
+        log.info('phase2: no HIGH candidates to process')
         return { fireCount, bufferCount, dropCount, usage: totalUsage }
     }
 
-    console.log(`[Sentinel] Phase 2: Processing ${highCandidates.length} HIGH candidates`)
+    log.info({ count: highCandidates.length }, 'phase2: processing HIGH candidates')
 
     // Process in concurrent batches of 20
     for (let i = 0; i < highCandidates.length; i += CONCURRENT_BATCH_SIZE) {
@@ -380,6 +393,7 @@ async function phase2Decisions(
                 stimuliMap,
                 usersMap,
                 decisionProvider,
+                fallbackProvider,
             )),
         )
 
@@ -396,13 +410,13 @@ async function phase2Decisions(
                 case 'FIRE':
                     fireCount++
                     await onFire(result.userId, result.stimulusId, result).catch(err => {
-                        console.error(`[Sentinel] Fire callback failed for ${result.userId}: ${(err as Error).message}`)
+                        log.error({ err, userId: result.userId }, 'fire callback failed')
                     })
                     break
                 case 'BUFFER':
                     bufferCount++
                     await writeBufferDecision(result).catch(err => {
-                        console.error(`[Sentinel] Buffer write failed for ${result.userId}: ${(err as Error).message}`)
+                        log.error({ err, userId: result.userId }, 'buffer write failed')
                     })
                     break
                 case 'DROP':
@@ -412,7 +426,7 @@ async function phase2Decisions(
         }
     }
 
-    console.log(`[Sentinel] Phase 2 complete — FIRE=${fireCount} BUFFER=${bufferCount} DROP=${dropCount}`)
+    log.info({ fireCount, bufferCount, dropCount }, 'phase2 complete')
 
     return { fireCount, bufferCount, dropCount, usage: totalUsage }
 }
@@ -422,6 +436,7 @@ async function processCandidate(
     stimuliMap: Map<string, Stimulus>,
     usersMap: Map<string, UserProfile>,
     provider: LLMProvider,
+    fallbackProvider?: LLMProvider,
 ): Promise<DecisionResult | null> {
     const user = usersMap.get(candidate.userId)
     const stimulus = stimuliMap.get(candidate.stimulusId)
@@ -432,10 +447,12 @@ async function processCandidate(
     if (signalPacket) {
         const ageMinutes = (Date.now() - signalPacket.createdAt.getTime()) / 60_000
         if (ageMinutes > SIGNAL_STALENESS_MINUTES) {
-            console.log(`[Sentinel] Stale signal for ${candidate.userId} (${Math.round(ageMinutes)}min) — DROP`)
+            log.info({ userId: candidate.userId, ageMinutes: Math.round(ageMinutes) }, 'stale signal — DROP')
             return {
                 userId: candidate.userId,
                 stimulusId: candidate.stimulusId,
+                stimulusType: candidate.stimulusType,
+                stimulusKey: candidate.stimulusKey,
                 decision: 'DROP',
                 reasoning: `Signal packet stale (${Math.round(ageMinutes)}min > ${SIGNAL_STALENESS_MINUTES}min)`,
                 prefetchHint: null,
@@ -448,6 +465,8 @@ async function processCandidate(
             return {
                 userId: candidate.userId,
                 stimulusId: candidate.stimulusId,
+                stimulusType: candidate.stimulusType,
+                stimulusKey: candidate.stimulusKey,
                 decision: 'DROP',
                 reasoning: 'Stimulus invalidated by signal packet',
                 prefetchHint: null,
@@ -462,6 +481,8 @@ async function processCandidate(
         return {
             userId: candidate.userId,
             stimulusId: candidate.stimulusId,
+            stimulusType: candidate.stimulusType,
+            stimulusKey: candidate.stimulusKey,
             decision: 'DROP',
             reasoning: `User fatigue ${fatigue.toFixed(2)} ≥ ${FATIGUE_CAP}`,
             prefetchHint: null,
@@ -476,6 +497,8 @@ async function processCandidate(
             return {
                 userId: candidate.userId,
                 stimulusId: candidate.stimulusId,
+                stimulusType: candidate.stimulusType,
+                stimulusKey: candidate.stimulusKey,
                 decision: 'BUFFER',
                 reasoning: `Proactive cooldown — last sent ${Math.round(timeSinceLast / 60_000)}min ago`,
                 prefetchHint: null,
@@ -484,38 +507,70 @@ async function processCandidate(
         }
     }
 
-    // LLM decision
+    // LLM decision — try primary provider, fall back on error or high latency
+    const messages = buildDecisionMessages(candidate, user, stimulus, signalPacket)
+    const chatParams = {
+        model: '',  // provider default
+        messages,
+        maxTokens: 256,
+        temperature: 0.2,
+        jsonMode: true,
+    }
+
+    let response: Awaited<ReturnType<LLMProvider['chat']>> | null = null
+    let usedFallback = false
+
     try {
-        const messages = buildDecisionMessages(candidate, user, stimulus, signalPacket)
-        const response = await provider.chat({
-            model: '',  // provider default
-            messages,
-            maxTokens: 256,
-            temperature: 0.2,
-            jsonMode: true,
-        })
+        const callStart = Date.now()
+        response = await provider.chat(chatParams)
+        const latency = Date.now() - callStart
 
-        const parsed = safeParseDecision(response.content)
-
-        return {
-            userId: candidate.userId,
-            stimulusId: candidate.stimulusId,
-            decision: parsed.decision,
-            reasoning: parsed.reasoning,
-            prefetchHint: parsed.prefetchHint,
-            usage: response.usage,
+        if (latency > BEDROCK_LATENCY_THRESHOLD_MS && fallbackProvider) {
+            log.warn({ latencyMs: latency, userId: candidate.userId, stimulusId: candidate.stimulusId }, 'primary provider slow — retrying with fallback')
+            response = await fallbackProvider.chat(chatParams)
+            usedFallback = true
         }
     } catch (err) {
-        console.error(`[Sentinel] Decision failed for ${candidate.userId}/${candidate.stimulusId}: ${(err as Error).message}`)
-        // On LLM failure, BUFFER to be safe — don't lose the candidate
+        if (fallbackProvider) {
+            log.warn({ err, userId: candidate.userId, stimulusId: candidate.stimulusId }, 'primary provider failed — retrying with fallback')
+            try {
+                response = await fallbackProvider.chat(chatParams)
+                usedFallback = true
+            } catch (fallbackErr) {
+                log.error({ err: fallbackErr, userId: candidate.userId, stimulusId: candidate.stimulusId }, 'fallback also failed')
+            }
+        } else {
+            log.error({ err, userId: candidate.userId, stimulusId: candidate.stimulusId }, 'decision failed')
+        }
+    }
+
+    if (!response) {
         return {
             userId: candidate.userId,
             stimulusId: candidate.stimulusId,
+            stimulusType: candidate.stimulusType,
+            stimulusKey: candidate.stimulusKey,
             decision: 'BUFFER',
-            reasoning: `LLM decision failed: ${(err as Error).message}`,
+            reasoning: 'LLM decision failed on all providers',
             prefetchHint: null,
             usage: { inputTokens: 0, outputTokens: 0 },
         }
+    }
+
+    if (usedFallback) {
+        log.info({ userId: candidate.userId, stimulusId: candidate.stimulusId }, 'used fallback provider')
+    }
+
+    const parsed = safeParseDecision(response.content)
+    return {
+        userId: candidate.userId,
+        stimulusId: candidate.stimulusId,
+        stimulusType: candidate.stimulusType,
+        stimulusKey: candidate.stimulusKey,
+        decision: parsed.decision,
+        reasoning: parsed.reasoning,
+        prefetchHint: parsed.prefetchHint,
+        usage: response.usage,
     }
 }
 
@@ -561,16 +616,24 @@ Decide: FIRE, BUFFER, or DROP. Output JSON only.`,
 async function getActiveUsers(): Promise<UserProfile[]> {
     try {
         const result = await getPool().query(`
-            SELECT u.id as user_id, u.home_location,
-                   COALESCE(up.preferences, '{}'::jsonb) as preferences,
-                   COALESCE(ps.state, 'CURIOUS') as pulse_state,
-                   COALESCE(ps.messages_today, 0) as messages_today,
-                   ps.last_proactive_sent,
-                   u.last_active_at
+            SELECT
+                u.user_id,
+                u.home_location,
+                COALESCE(
+                    jsonb_object_agg(up.category, up.value) FILTER (WHERE up.category IS NOT NULL),
+                    '{}'::jsonb
+                ) AS preferences,
+                COALESCE(pes.current_state, 'CURIOUS') AS pulse_state,
+                COALESCE(pes.message_count, 0) AS messages_today,
+                MAX(s.last_active) AS last_active_at,
+                MAX(pm.sent_at) AS last_proactive_sent
             FROM users u
-            LEFT JOIN user_preferences up ON up.user_id = u.id
-            LEFT JOIN pulse_state ps ON ps.user_id = u.id
-            WHERE u.last_active_at > NOW() - INTERVAL '7 days'
+            JOIN sessions s ON s.user_id = u.user_id
+            LEFT JOIN user_preferences up ON up.user_id = u.user_id
+            LEFT JOIN pulse_engagement_scores pes ON pes.user_id = u.user_id
+            LEFT JOIN proactive_messages pm ON pm.user_id = u.user_id
+            WHERE s.last_active > NOW() - INTERVAL '7 days'
+            GROUP BY u.user_id, u.home_location, pes.current_state, pes.message_count
         `)
 
         return result.rows.map(row => ({
@@ -584,7 +647,7 @@ async function getActiveUsers(): Promise<UserProfile[]> {
             lastProactiveSent: row.last_proactive_sent ? new Date(row.last_proactive_sent) : null,
         }))
     } catch (err) {
-        console.error('[Sentinel] Failed to fetch active users:', (err as Error).message)
+        log.error({ err }, 'failed to fetch active users')
         return []
     }
 }
@@ -597,7 +660,7 @@ async function getActiveStimuli(): Promise<Stimulus[]> {
                    COALESCE(ttl_seconds, 1800) as ttl_seconds,
                    fetched_at
             FROM stimulus_cache
-            WHERE fetched_at > NOW() - (ttl_seconds || ' seconds')::interval
+            WHERE fetched_at > NOW() - (ttl_seconds::text || ' seconds')::interval
         `)
 
         return result.rows.map(row => ({
@@ -609,7 +672,7 @@ async function getActiveStimuli(): Promise<Stimulus[]> {
             weight: 1.0,  // TODO: per-stimulus weights from config
         }))
     } catch (err) {
-        console.error('[Sentinel] Failed to fetch stimuli:', (err as Error).message)
+        log.error({ err }, 'failed to fetch stimuli')
         return []
     }
 }
@@ -639,7 +702,7 @@ async function getLatestSignalPacket(userId: string): Promise<SignalPacket | nul
         }
     } catch (err) {
         // Table may not exist yet (#127) — graceful degradation
-        console.warn('[Sentinel] signal_packets query failed (table may not exist):', (err as Error).message)
+        log.warn({ err }, 'signal_packets query failed (table may not exist)')
         return null
     }
 }
@@ -654,14 +717,14 @@ async function writeBufferDecision(result: DecisionResult): Promise<void> {
                           status = 'active', expires_at = EXCLUDED.expires_at
         `, [
             result.userId,
-            result.stimulusId.split('_')[0] || 'unknown',
-            result.stimulusId,
+            result.stimulusType,
+            result.stimulusKey,
             result.decision === 'BUFFER' ? 0.7 : 0,
             JSON.stringify({ reasoning: result.reasoning, prefetchHint: result.prefetchHint }),
         ])
     } catch (err) {
         // Table may not exist yet (#127) — graceful degradation
-        console.warn('[Sentinel] proactive_state write failed (table may not exist):', (err as Error).message)
+        log.warn({ err }, 'proactive_state write failed (table may not exist)')
     }
 }
 
@@ -705,11 +768,11 @@ export async function runCycle(
     ])
 
     if (users.length === 0 || stimuli.length === 0) {
-        console.log(`[Sentinel] Skipping cycle — users=${users.length} stimuli=${stimuli.length}`)
+        log.info({ users: users.length, stimuli: stimuli.length }, 'skipping cycle — nothing to process')
         return emptyMetrics(startTime)
     }
 
-    console.log(`[Sentinel] Cycle start — ${users.length} users × ${stimuli.length} stimuli = ${users.length * stimuli.length} potential pairs`)
+    log.info({ users: users.length, stimuli: stimuli.length, pairs: users.length * stimuli.length }, 'cycle start')
 
     // Build lookup maps
     const usersMap = new Map(users.map(u => [u.userId, u]))
@@ -723,13 +786,17 @@ export async function runCycle(
     // Phase 2: Real-time decisions (HIGH candidates only)
     const phase2Start = Date.now()
 
-    // Try Bedrock first, fall back to Together real-time
+    // Try Bedrock first; Together is always wired as per-candidate runtime fallback
     let decisionProvider: LLMProvider = bedrockProvider
     const bedrockAvailable = await bedrockProvider.isAvailable()
     if (!bedrockAvailable) {
-        console.warn('[Sentinel] Bedrock unavailable — falling back to Together real-time for Phase 2')
+        log.warn('bedrock unavailable at startup — using Together real-time for phase2')
         decisionProvider = togetherProvider
     }
+
+    // Pass togetherProvider as fallback so individual Bedrock errors/high-latency calls
+    // automatically retry via Together instead of defaulting to BUFFER
+    const phase2FallbackProvider = decisionProvider === bedrockProvider ? togetherProvider : undefined
 
     const phase2 = await phase2Decisions(
         phase1.high,
@@ -737,6 +804,7 @@ export async function runCycle(
         usersMap,
         decisionProvider,
         onFire,
+        phase2FallbackProvider,
     )
     const phase2Duration = Date.now() - phase2Start
 
@@ -766,7 +834,7 @@ export async function runCycle(
         estimatedCost: cost,
     }
 
-    console.log(`[Sentinel] Cycle complete — FIRE=${phase2.fireCount} BUFFER=${phase2.bufferCount} DROP=${phase2.dropCount} — $${cost.toFixed(4)} — ${totalDuration}ms`)
+    log.info({ fire: phase2.fireCount, buffer: phase2.bufferCount, drop: phase2.dropCount, costUsd: cost, durationMs: totalDuration }, 'cycle complete')
 
     return metrics
 }
@@ -796,11 +864,11 @@ function emptyMetrics(startTime: number): CycleMetrics {
  */
 export async function startSentinelLoop(onFire?: FireCallback): Promise<void> {
     if (process.env.SENTINEL_ENABLED !== 'true') {
-        console.log('[Sentinel] Disabled — set SENTINEL_ENABLED=true to activate')
+        log.info('disabled — set SENTINEL_ENABLED=true to activate')
         return
     }
 
-    console.log('[Sentinel] Starting background loop')
+    log.info('starting background loop')
     loadSoulPrompts()
 
     // Initialize providers
@@ -813,7 +881,7 @@ export async function startSentinelLoop(onFire?: FireCallback): Promise<void> {
 
     // Default fire callback — stub until Alpha (#140) is wired
     const fireCallback: FireCallback = onFire ?? (async (userId, stimulusId, decision) => {
-        console.log(`[Sentinel] FIRE stub — userId=${userId} stimulus=${stimulusId} reasoning="${decision.reasoning}"`)
+        log.info({ userId, stimulusId, reasoning: decision.reasoning }, 'FIRE stub')
         // TODO: Wire to Alpha delivery when #140 lands
     })
 
@@ -828,17 +896,17 @@ export async function startSentinelLoop(onFire?: FireCallback): Promise<void> {
             await runCycle(bedrockProvider, togetherProvider, fireCallback)
         } catch (err) {
             // Never crash the loop — log and continue
-            console.error('[Sentinel] Cycle failed:', (err as Error).message)
+            log.error({ err }, 'cycle failed')
         }
 
         // Adaptive sleep
         const hour = new Date().getHours()
         const sleepMs = (hour >= 8 && hour < 22) ? SLEEP_MS_PEAK : SLEEP_MS_OFF_PEAK
-        console.log(`[Sentinel] Sleeping ${sleepMs / 1000}s (${hour >= 8 && hour < 22 ? 'peak' : 'off-peak'})`)
+        log.debug({ sleepMs, period: hour >= 8 && hour < 22 ? 'peak' : 'off-peak' }, 'sleeping')
         await new Promise(resolve => setTimeout(resolve, sleepMs))
     }
 
-    console.log('[Sentinel] Loop stopped')
+    log.info('loop stopped')
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -855,7 +923,7 @@ function safeParseScore(content: string): { score: number; reasoning: string } {
             reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : '',
         }
     } catch {
-        console.warn(`[Sentinel] Failed to parse score JSON: ${content.slice(0, 100)}`)
+        log.warn({ sample: content.slice(0, 100) }, 'failed to parse score JSON')
         return { score: 0, reasoning: 'parse_error' }
     }
 }
@@ -878,7 +946,7 @@ function safeParseDecision(content: string): { decision: Decision; reasoning: st
             prefetchHint: parsed.prefetch_hint || null,
         }
     } catch {
-        console.warn(`[Sentinel] Failed to parse decision JSON: ${content.slice(0, 100)}`)
+        log.warn({ sample: content.slice(0, 100) }, 'failed to parse decision JSON')
         return { decision: 'BUFFER', reasoning: 'parse_error', prefetchHint: null }
     }
 }
