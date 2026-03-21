@@ -1,22 +1,15 @@
-# Phase 0 + Phase 1 Testing Guide
-
-Verification steps for local dev and server deployment.
+# Phase 0 + Phase 1: Testing & Deployment Guide
 
 ---
 
-## Phase 0: DB Migrations (Fusion Tables)
+## Part A: Local Dev Verification
 
-### 1. Run the migration
+### Phase 0 — DB Tables
 
-```bash
-psql "$DATABASE_URL" -f database/migrations/005-fusion-architecture-tables.sql
-```
-
-If already run, re-running is safe (`CREATE TABLE IF NOT EXISTS`).
-
-### 2. Verify all 6 tables exist
+Run these against your local/dev database:
 
 ```sql
+-- 1. Verify all 6 tables exist
 SELECT tablename FROM pg_tables
 WHERE schemaname = 'public'
   AND tablename IN (
@@ -24,13 +17,9 @@ WHERE schemaname = 'public'
     'pulse_history', 'signal_packets', 'pushback_tracker'
   )
 ORDER BY tablename;
-```
+-- Expected: 6 rows
 
-Expected: 6 rows.
-
-### 3. Verify indexes exist
-
-```sql
+-- 2. Verify indexes
 SELECT indexname, tablename FROM pg_indexes
 WHERE indexname IN (
   'idx_proactive_state_user_status',
@@ -40,14 +29,10 @@ WHERE indexname IN (
   'idx_pulse_history_user_time',
   'idx_signal_packets_unprocessed'
 )
-ORDER BY tablename, indexname;
-```
+ORDER BY tablename;
+-- Expected: 6 rows
 
-Expected: 6 rows.
-
-### 4. Verify constraints
-
-```sql
+-- 3. Verify constraints
 SELECT constraint_name, table_name FROM information_schema.table_constraints
 WHERE constraint_name IN (
   'uq_proactive_state_user_stimulus',
@@ -57,226 +42,216 @@ WHERE constraint_name IN (
   'fk_proactive_state_result_ref'
 )
 ORDER BY table_name;
+-- Expected: 5 rows
 ```
 
-Expected: 5 rows.
+### Phase 1 — Fusion Engine Tests
 
-### 5. Insert/select round-trip (requires a valid user_id from `users` table)
+```bash
+# Type check
+npx tsc --noEmit
 
-```sql
--- Get a test user_id (use an existing user)
-SELECT user_id FROM users LIMIT 1;
--- Use the returned UUID below as <USER_UUID>
+# Fusion engine tests (37 tests)
+npm run test -- src/fusion/
 
--- proactive_state
-INSERT INTO proactive_state (user_id, stimulus_type, stimulus_key, score, data)
-VALUES ('<USER_UUID>', 'weather', 'test_rain_commute', 0.85,
-        '{"condition":"rain","area":"Koramangala"}')
-ON CONFLICT (user_id, stimulus_key) DO NOTHING;
-
-SELECT id, stimulus_type, stimulus_key, score, status
-FROM proactive_state WHERE user_id = '<USER_UUID>';
-
--- stimulus_cache
-INSERT INTO stimulus_cache (source, cache_key, data_json, ttl_seconds)
-VALUES ('openweather', 'test_bengaluru', '{"temp":28,"condition":"rain"}', 300)
-ON CONFLICT (source, cache_key) DO NOTHING;
-
-SELECT source, cache_key, data_json, fetched_at
-FROM stimulus_cache WHERE source = 'openweather' AND cache_key = 'test_bengaluru';
-
--- tool_results
-INSERT INTO tool_results (user_id, tool_name, args_hash, result, expires_at)
-VALUES ('<USER_UUID>', 'compare_rides', 'test_hash_abc',
-        '{"uber":250,"ola":230,"rapido":180}', NOW() + INTERVAL '1 hour')
-ON CONFLICT (user_id, tool_name, args_hash) DO NOTHING;
-
-SELECT tool_name, args_hash, result, used
-FROM tool_results WHERE user_id = '<USER_UUID>';
-
--- pulse_history
-INSERT INTO pulse_history (user_id, score, state, previous_state, delta, signal_source)
-VALUES ('<USER_UUID>', 65, 'ENGAGED', 'CURIOUS', 15, 'user_message');
-
-SELECT score, state, previous_state, delta, signal_source
-FROM pulse_history WHERE user_id = '<USER_UUID>' ORDER BY created_at DESC LIMIT 1;
-
--- signal_packets
-INSERT INTO signal_packets (user_id, invalidated_stimuli, current_direction, extracted_intents, engagement_signal)
-VALUES ('<USER_UUID>', ARRAY[]::text[], 'food_ordering', ARRAY['biryani','delivery']::text[], 'positive');
-
-SELECT current_direction, extracted_intents, engagement_signal, processed
-FROM signal_packets WHERE user_id = '<USER_UUID>' ORDER BY created_at DESC LIMIT 1;
-
--- pushback_tracker
-INSERT INTO pushback_tracker (user_id, stimulus_type, rejection_count)
-VALUES ('<USER_UUID>', 'weather', 0)
-ON CONFLICT (user_id, stimulus_type) DO NOTHING;
-
-SELECT stimulus_type, rejection_count
-FROM pushback_tracker WHERE user_id = '<USER_UUID>';
-```
-
-### 6. Verify FK constraint works
-
-```sql
--- This should FAIL with a foreign key violation (invalid user_id)
-INSERT INTO proactive_state (user_id, stimulus_type, stimulus_key, score, data)
-VALUES ('00000000-0000-0000-0000-000000000000', 'weather', 'fk_test', 0.5, '{}');
-```
-
-Expected: `ERROR: insert or update on table "proactive_state" violates foreign key constraint`
-
-### 7. Cleanup test data
-
-```sql
-DELETE FROM signal_packets WHERE user_id = '<USER_UUID>' AND current_direction = 'food_ordering';
-DELETE FROM pulse_history WHERE user_id = '<USER_UUID>' AND signal_source = 'user_message' AND delta = 15;
-DELETE FROM tool_results WHERE user_id = '<USER_UUID>' AND args_hash = 'test_hash_abc';
-DELETE FROM proactive_state WHERE user_id = '<USER_UUID>' AND stimulus_key = 'test_rain_commute';
-DELETE FROM pushback_tracker WHERE user_id = '<USER_UUID>' AND stimulus_type = 'weather';
-DELETE FROM stimulus_cache WHERE source = 'openweather' AND cache_key = 'test_bengaluru';
+# Full regression
+npm run test
 ```
 
 ---
 
-## Phase 1: Fusion Engine + Soul Files
+## Part B: Server Deployment (Step-by-Step)
 
-### Local Dev Verification
+Your server: `root@aria-beta:~/personifi-aria` with Docker + Caddy.
 
-#### 1. Type check
+### Step 1: SSH into server
 
 ```bash
-npx tsc --noEmit
+ssh root@aria-beta
+cd ~/personifi-aria
 ```
 
-Expected: no errors.
-
-#### 2. Run Fusion Engine unit tests
+### Step 2: Pull the fusion branch
 
 ```bash
-npm run test -- src/fusion/
-```
+# Check what branch you're on
+git branch
 
-Expected: 37 tests pass — scoring, mode switching, pushback protocol, recovery protocol, proactive decisions.
-
-#### 3. Run full test suite (regression check)
-
-```bash
-npm run test
-```
-
-Expected: no new failures. (Pre-existing failures in unrelated modules are OK.)
-
-#### 4. Soul file token check
-
-```bash
-wc -w config/soul-v2.md config/sentinel-soul.md
-```
-
-Expected: soul-v2.md ~350-450 words (~500 tokens), sentinel-soul.md ~200-250 words (~300 tokens).
-
-### Server Deployment Verification
-
-#### 1. Pull and build
-
-```bash
+# Fetch and switch to the fusion branch
+git fetch origin
+git checkout dev/fusion-architecture-v2
 git pull origin dev/fusion-architecture-v2
-npm install
-npm run build
 ```
 
-Expected: TypeScript compiles with no errors.
+### Step 3: Run the DB migration
 
-#### 2. Verify Phase 0 tables exist on server DB
-
-Run the SQL from Phase 0 Step 2 above against your server PostgreSQL. If tables are missing, run the migration:
+The migration is safe to re-run (`CREATE TABLE IF NOT EXISTS`).
 
 ```bash
+# Run against your production database
 psql "$DATABASE_URL" -f database/migrations/005-fusion-architecture-tables.sql
 ```
 
-#### 3. Set feature flags in `.env`
+If `psql` isn't installed on the host, run it from inside the container or connect from your local machine:
 
 ```bash
-# Enable Fusion Engine (parallel logging mode — does not affect bot behavior)
-FUSION_ENGINE_ENABLED=true
+# Option A: from inside a temporary container
+docker run --rm -it postgres:15 psql "$DATABASE_URL" -f - < database/migrations/005-fusion-architecture-tables.sql
 
-# Enable Soul v2 (uses soul-v2.md instead of SOUL.md for Layer 1)
-SOUL_V2_ENABLED=true
+# Option B: from your local machine (replace with your actual DB URL)
+psql "postgresql://user:pass@db-host:25060/dbname?sslmode=require" -f database/migrations/005-fusion-architecture-tables.sql
 ```
 
-Both default to `false`. Enable one at a time to isolate issues, or both together.
-
-#### 4. Restart the bot
+### Step 4: Verify tables were created
 
 ```bash
-# However you restart your process (pm2, systemd, etc.)
-pm2 restart aria    # example
+psql "$DATABASE_URL" -c "
+SELECT tablename FROM pg_tables
+WHERE schemaname = 'public'
+  AND tablename IN (
+    'proactive_state', 'stimulus_cache', 'tool_results',
+    'pulse_history', 'signal_packets', 'pushback_tracker'
+  )
+ORDER BY tablename;
+"
 ```
 
-#### 5. Send a test message and check logs
+Expected: 6 rows.
 
-Send any message to the bot via Telegram. Check logs for:
+### Step 5: Add fusion flags to `.env`
+
+```bash
+# Add these two lines to your .env file
+echo '' >> .env
+echo '# Fusion architecture (Phase 1)' >> .env
+echo 'FUSION_ENGINE_ENABLED=true' >> .env
+echo 'SOUL_V2_ENABLED=false' >> .env
+```
+
+Start with `FUSION_ENGINE_ENABLED=true` and `SOUL_V2_ENABLED=false` so you can verify the Fusion Engine logging first. Enable `SOUL_V2_ENABLED=true` separately once confirmed.
+
+> Both flags default to `false`. With `FUSION_ENGINE_ENABLED=true`, the Fusion Engine runs in **parallel logging mode** — it logs decisions but does NOT change bot behavior. Safe to enable.
+
+### Step 6: Rebuild and restart the container
+
+```bash
+# Stop the current container
+docker compose down
+
+# Rebuild with the new code (fusion engine files are new)
+docker compose build --no-cache
+
+# Start back up
+docker compose up -d
+```
+
+Or if you use the prod compose with Caddy:
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml down
+docker compose -f deploy/docker-compose.prod.yml build --no-cache
+DOMAIN=your-domain.com docker compose -f deploy/docker-compose.prod.yml up -d
+```
+
+### Step 7: Verify container is running
+
+```bash
+# Check container status
+docker compose ps
+
+# Check health endpoint
+curl -s http://localhost:3000/health
+
+# Follow logs
+docker compose logs -f aria
+```
+
+### Step 8: Send a test message
+
+Send any message to the bot on Telegram. Watch the logs for:
 
 ```
 [Fusion/Reactive] user=<uuid> route=respond confidence=1.00 proactive=0 invalidated=0
 ```
 
-- `route=respond` — normal response (no proactive stimuli in DB yet)
-- `proactive=0` — no active proactive_state rows for this user
-- `invalidated=0` — nothing to invalidate
+- `route=respond` — normal (no proactive stimuli in DB yet)
+- `proactive=0` — no active proactive_state rows
+- `invalidated=0` — nothing stale to invalidate
 
-#### 6. Test with a proactive stimulus
+If you see this line, Phase 1 Fusion Engine is working.
 
-Insert a dummy proactive_state row for a real user, then send a message:
+### Step 9: Test with a proactive stimulus (optional)
 
-```sql
+Insert a dummy stimulus for a real user to verify the Fusion Engine picks it up:
+
+```bash
+psql "$DATABASE_URL" -c "
 INSERT INTO proactive_state (user_id, stimulus_type, stimulus_key, score, data)
-VALUES ('<REAL_USER_UUID>', 'weather', 'test_rain_alert', 0.85,
-        '{"condition":"rain","area":"Koramangala","forecast":"heavy rain in 2 hours"}')
+VALUES (
+  (SELECT user_id FROM users LIMIT 1),
+  'weather', 'test_rain_alert', 0.85,
+  '{\"condition\":\"rain\",\"area\":\"Koramangala\",\"forecast\":\"heavy rain in 2 hours\"}'
+)
 ON CONFLICT (user_id, stimulus_key) DO NOTHING;
+"
 ```
 
-Send a message and check logs for:
+Send a message from that user. Check logs for `proactive=1`:
 
 ```
 [Fusion/Reactive] user=<uuid> route=respond confidence=... proactive=1 invalidated=0
 ```
 
-`proactive=1` confirms the Fusion Engine found and processed the stimulus.
+Clean up:
 
-Clean up after testing:
-
-```sql
-DELETE FROM proactive_state WHERE stimulus_key = 'test_rain_alert';
+```bash
+psql "$DATABASE_URL" -c "DELETE FROM proactive_state WHERE stimulus_key = 'test_rain_alert';"
 ```
 
-#### 7. Regression check
+### Step 10: Enable Soul v2 (when ready)
 
-With both flags enabled:
-- Bot responds normally to "hello", "what's the weather", etc.
-- Response time is not noticeably slower (Fusion runs in parallel, fire-and-forget)
-- No errors in logs beyond the `[Fusion/Reactive]` info line
+```bash
+# Edit .env
+sed -i 's/SOUL_V2_ENABLED=false/SOUL_V2_ENABLED=true/' .env
 
-With both flags disabled (or unset):
-- No `[Fusion/Reactive]` log lines appear
-- `personality.ts` loads SOUL.md (not soul-v2.md)
-- Behavior is identical to pre-fusion code
+# Restart (no rebuild needed, just env change)
+docker compose down && docker compose up -d
+```
+
+Verify by sending a message — response tone should be more concise/social. To revert:
+
+```bash
+sed -i 's/SOUL_V2_ENABLED=true/SOUL_V2_ENABLED=false/' .env
+docker compose down && docker compose up -d
+```
+
+---
+
+## Part C: Rollback
+
+If anything goes wrong, disable both flags:
+
+```bash
+sed -i 's/FUSION_ENGINE_ENABLED=true/FUSION_ENGINE_ENABLED=false/' .env
+sed -i 's/SOUL_V2_ENABLED=true/SOUL_V2_ENABLED=false/' .env
+docker compose down && docker compose up -d
+```
+
+This restores pre-fusion behavior completely. The fusion code still exists but is inactive.
 
 ---
 
 ## Quick Checklist
 
-| Step | Phase | Where | Pass? |
-|------|-------|-------|-------|
-| 6 tables exist | 0 | Server DB | |
-| 6 indexes exist | 0 | Server DB | |
-| 5 constraints exist | 0 | Server DB | |
-| Insert/select round-trip | 0 | Server DB | |
-| FK violation rejects bad user_id | 0 | Server DB | |
-| `npm run build` succeeds | 1 | Server | |
-| `[Fusion/Reactive]` log appears | 1 | Server logs | |
-| Proactive stimulus detected | 1 | Server logs | |
-| Bot responds normally | 1 | Telegram | |
-| No regressions with flags off | 1 | Telegram | |
+| # | Step | Pass? |
+|---|------|-------|
+| 1 | SSH + pull `dev/fusion-architecture-v2` | |
+| 2 | Migration `005` runs without errors | |
+| 3 | 6 tables exist in DB | |
+| 4 | Fusion flags added to `.env` | |
+| 5 | `docker compose build` succeeds | |
+| 6 | Container starts + health check passes | |
+| 7 | `[Fusion/Reactive]` log line appears on message | |
+| 8 | Bot responds normally (no regressions) | |
+| 9 | Proactive stimulus detected (optional) | |
+| 10 | Flags off = zero fusion activity | |
