@@ -4,6 +4,9 @@ import { syncEngagementState } from './engagement-metrics.js'
 import { extractEngagementSignals } from './signal-extractor.js'
 import { applyDecay, clampScore, isStale, transitionState } from './state-machine.js'
 import type { EngagementState, PulseInput, PulseRecord, PulseSignalHistoryEntry } from './types.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'pulse-service' })
 
 interface PulseDbRow {
   user_id: string
@@ -101,18 +104,21 @@ export class PulseService {
     // Fire-and-forget via setImmediate — never block the scoring path with memory writes
     setImmediate(() => {
       syncEngagementState(input.userId, nextState, nextScore).catch(err =>
-        console.error(`[Pulse] Failed to sync engagement state for ${input.userId}:`, err),
+        log.error({ userId: input.userId, err }, 'Failed to sync engagement state'),
       )
     })
 
     if (current.state !== nextState) {
-      console.log(
-        `[Pulse] State transition user=${input.userId} ${current.state}->${nextState} score=${nextScore} delta=${signals.scoreDelta} signals=${signals.matchedSignals.join(',') || 'none'}`
-      )
+      log.info({
+        userId: input.userId,
+        from: current.state,
+        to: nextState,
+        score: nextScore,
+        delta: signals.scoreDelta,
+        signals: signals.matchedSignals.join(',') || 'none',
+      }, 'State transition')
     } else {
-      console.log(
-        `[Pulse] user=${input.userId} state=${nextState} score=${nextScore} delta=${signals.scoreDelta}`
-      )
+      log.info({ userId: input.userId, state: nextState, score: nextScore, delta: signals.scoreDelta }, 'Pulse update')
     }
 
     return next

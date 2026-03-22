@@ -26,6 +26,9 @@ import { getAirQuality, airQualityToolDefinition } from './air-quality.js'
 import { getPollen, pollenToolDefinition } from './pollen.js'
 import { getTimezone, timezoneToolDefinition } from './timezone.js'
 import { safeError } from '../utils/safe-log.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'tools' })
 
 const bodyHooks: BodyHooks = {
     async executeTool(name: string, params: Record<string, unknown>): Promise<ToolExecutionResult> {
@@ -77,7 +80,7 @@ const bodyHooks: BodyHooks = {
                     return { success: false, data: null, error: `Unknown tool: ${name}` }
             }
         } catch (error) {
-            console.error(`[Tools] ${name} execution failed:`, safeError(error))
+            log.error({ toolName: name, err: safeError(error) }, 'Tool execution failed')
             return { success: false, data: null, error: `Tool execution failed: ${name}` }
         }
     },
@@ -109,7 +112,7 @@ const bodyHooks: BodyHooks = {
 }
 
 registerBodyHooks(bodyHooks)
-console.log(`[Tools] Registered ${bodyHooks.getAvailableTools().length} tools`)
+log.info({ count: bodyHooks.getAvailableTools().length }, 'Tools registered')
 
 /**
  * Convert our ToolDefinition[] to Groq's ChatCompletionTool[] format

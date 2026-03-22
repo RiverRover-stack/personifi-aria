@@ -5,6 +5,9 @@ import { reflectToolResult, buildSummaryForPrompt, buildFallbackMediaDirective }
 import { getWeatherState } from '../weather/weather-stimulus.js'
 import { getTrafficState } from '../stimulus/traffic-stimulus.js'
 import { getFestivalState } from '../stimulus/festival-stimulus.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'brain' })
 
 export const brainHooks: BrainHooks = {
     async routeMessage(context: RouteContext): Promise<RouteDecision> {
@@ -27,7 +30,7 @@ export const brainHooks: BrainHooks = {
                 decision.toolName = classification.tool_hint
                 decision.toolParams = args
             } else {
-                console.warn(`[brain] Classifier indicated tool '${classification.tool_hint}' but provided no tool_args for message`)
+                log.warn({ toolHint: classification.tool_hint }, 'Classifier indicated tool but provided no tool_args')
             }
         }
 
@@ -88,7 +91,7 @@ export const brainHooks: BrainHooks = {
                 mediaDirective,
             }
         } catch (error) {
-            console.error('[brain] Tool pipeline execution failed:', error)
+            log.error({ err: error }, 'Tool pipeline execution failed')
             return {
                 success: false,
                 data: 'Internal error executing tool',

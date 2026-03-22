@@ -20,6 +20,9 @@ import { addMemories } from '../memory-store.js'
 import { archiveSession, type ArchivableMessage } from './s3-archive.js'
 import { withGroqRetry } from '../utils/retry.js'
 import { sanitizeInput } from '../character/sanitize.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'session-summaries' })
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -76,16 +79,13 @@ export async function checkAndSummarizeSessions(): Promise<void> {
 
     if (result.rows.length === 0) return
 
-    console.log(`[archivist/summarize] Found ${result.rows.length} session(s) to summarize`)
+    log.info({ count: result.rows.length }, 'Found sessions to summarize')
 
     for (const session of result.rows) {
         try {
             await summarizeSession(session)
         } catch (err) {
-            console.error(
-                `[archivist/summarize] Failed to summarize session ${session.sessionId}:`,
-                (err as Error).message
-            )
+            log.error({ err, sessionId: session.sessionId }, 'Failed to summarize session')
         }
     }
 }
@@ -111,7 +111,7 @@ export async function summarizeSession(session: SessionRow): Promise<string | nu
     // Step 2 — Generate summary with 8B LLM
     const summaryText = await generateSummary(userId, messages)
     if (!summaryText) {
-        console.warn(`[archivist/summarize] Empty summary for session ${sessionId}`)
+        log.warn({ sessionId }, 'Empty summary')
         return null
     }
 
@@ -146,8 +146,9 @@ export async function summarizeSession(session: SessionRow): Promise<string | nu
         [] // No history for the summary itself
     )
 
-    console.log(
-        `[archivist/summarize] Session ${sessionId} summarized (${messages.length} msgs → ${summaryText.length} chars)`
+    log.info(
+        { sessionId, messageCount: messages.length, summaryLength: summaryText.length },
+        'Session summarized',
     )
 
     return summaryText
@@ -221,7 +222,7 @@ async function generateSummary(
         const text = response.choices[0]?.message?.content?.trim()
         return text || null
     } catch (err) {
-        console.error('[archivist/summarize] LLM summarization failed:', (err as Error).message)
+        log.error({ err }, 'LLM summarization failed')
         return null
     }
 }

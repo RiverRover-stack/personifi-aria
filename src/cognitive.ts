@@ -30,6 +30,9 @@ import { withGroqRetry } from './utils/retry.js'
 import { getWeatherState } from './weather/weather-stimulus.js'
 import { getTrafficState } from './stimulus/traffic-stimulus.js'
 import { getFestivalState } from './stimulus/festival-stimulus.js'
+import { logger } from './logger.js'
+
+const log = logger.child({ module: 'cognitive' })
 
 // ─── Type Coercion Helper ───────────────────────────────────────────────────
 // Groq 8B sometimes emits numbers as strings (e.g. "amount": "100").
@@ -223,7 +226,7 @@ export async function classifyMessage(
             try {
                 toolArgs = JSON.parse(toolCall.function.arguments)
             } catch {
-                console.warn('[cognitive] Failed to parse tool_call arguments:', toolCall.function.arguments)
+                log.warn({ arguments: toolCall.function.arguments }, 'Failed to parse tool_call arguments')
             }
 
             toolArgs = coerceToolArgs(toolName, toolArgs)
@@ -310,7 +313,7 @@ export async function classifyMessage(
                 let toolArgs: Record<string, unknown> = {}
                 try { toolArgs = JSON.parse(match[2]) } catch { /* best effort */ }
                 toolArgs = coerceToolArgs(toolName, toolArgs)
-                console.log(`[cognitive] Recovered tool call from failed_generation: ${toolName}`, toolArgs)
+                log.info({ toolName, toolArgs }, 'Recovered tool call from failed_generation')
                 return {
                     message_complexity: 'complex',
                     needs_tool: true,
@@ -330,9 +333,9 @@ export async function classifyMessage(
         }
         // Rate-limit exhaustion — log cleanly instead of dumping full error
         if (error?.status === 429) {
-            console.warn('[cognitive] Classifier rate-limited after all retries, using default classification')
+            log.warn('Classifier rate-limited after all retries, using default classification')
         } else {
-            console.error('[cognitive] Classification failed, using defaults:', error)
+            log.error({ err: error }, 'Classification failed, using defaults')
         }
         return getDefaultClassification()
     }
@@ -428,7 +431,7 @@ export async function updateConversationGoal(
         )
         return result.rows[0] || null
     } catch (error) {
-        console.error('[cognitive] Goal update failed:', error)
+        log.error({ err: error }, 'Goal update failed')
         return null
     }
 }
@@ -453,7 +456,7 @@ export async function getActiveGoal(
         )
         return result.rows[0] || null
     } catch (error) {
-        console.error('[cognitive] Goal fetch failed:', error)
+        log.error({ err: error }, 'Goal fetch failed')
         return null
     }
 }

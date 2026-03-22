@@ -12,6 +12,9 @@ import { getAwsConfig } from '../aws/aws-config.js'
 import { publishMetric, subagentDimension } from '../aws/cloudwatch-metrics.js'
 import { sanitizeInput } from '../character/sanitize.js'
 import type { RejectedEntity, PreferredEntity } from './rejection-memory.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'bedrock-extractor' })
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -155,7 +158,7 @@ Assistant reply: "${assistantReply.slice(0, 400)}"`,
         }
     } catch (err) {
         const latencyMs = Date.now() - startMs
-        console.error(`[Bedrock/Extractor] Signal extraction failed (${latencyMs}ms):`, (err as Error).message)
+        log.error({ latencyMs, err }, 'Signal extraction failed')
         return null // Caller falls back to Groq
     }
 }

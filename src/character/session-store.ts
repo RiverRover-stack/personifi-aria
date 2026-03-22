@@ -4,6 +4,9 @@
  */
 
 import { Pool, PoolClient } from 'pg'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'session-store' })
 
 // Types
 export interface User {
@@ -340,7 +343,7 @@ export async function runMigrations(): Promise<void> {
     END $$
   `)
 
-  console.log('[DB] Migrations complete')
+  log.info('Migrations complete')
 }
 
 /**

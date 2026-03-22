@@ -84,6 +84,9 @@ import { handleOnboarding, type OnboardingResult } from '../onboarding/onboardin
 import { extractRejectionSignals, persistRejectionSignals, entityTypeToCategory } from '../intelligence/rejection-memory.js'
 import { resolveToolFromTopic } from '../topic-intent/tool-map.js'
 import { logExecutionBridge, logTopicCompleted } from '../topic-intent/logger.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'handler' })
 
 // Initialize Groq client
 const groq = new Groq({
@@ -400,7 +403,7 @@ function extractMediaFromToolResult(toolName: string | null | undefined, rawData
   const keys = data ? Object.keys(data) : []
   const hasImages = Array.isArray(data?.images)
   const imagesCount = hasImages ? data.images.length : 0
-  console.log(`[extractMedia] keys=${keys.join(',')} | hasImages=${hasImages} | imagesCount=${imagesCount} | firstImageUrl=${data?.images?.[0]?.url?.substring(0, 60) ?? 'N/A'}`)
+  log.debug({ keys, hasImages, imagesCount, firstImageUrl: data?.images?.[0]?.url?.substring(0, 60) ?? 'N/A' }, 'extractMedia diagnostic')
 
   // Grocery comparison: has a top-level images[] array with {url, caption}
   if (Array.isArray(data?.images)) {
@@ -574,7 +577,7 @@ export async function handleMessage(
     let onboardingResult: OnboardingResult | null = options.onboardingResult ?? null
     if (!options.bypassOnboarding && !user.authenticated) {
       onboardingResult = await handleOnboarding(user.userId, userMessage).catch(err => {
-        console.warn('[handler] Onboarding handling failed:', safeError(err))
+        log.warn({ err: safeError(err) }, 'Onboarding handling failed')
         return { handled: false as const }
       })
     }
@@ -602,7 +605,7 @@ export async function handleMessage(
     // classifier/memory pipeline. This avoids funnel-state collisions.
     if (channel === 'telegram' && !lightweightOnboarding) {
       const funnelReply = await handleFunnelReply(channelUserId, userMessage).catch(err => {
-        console.warn('[handler] Funnel reply handling failed, continuing normal pipeline:', safeError(err))
+        log.warn({ err: safeError(err) }, 'Funnel reply handling failed, continuing normal pipeline')
         return { handled: false as const }
       })
       if (funnelReply.handled) {
@@ -615,7 +618,7 @@ export async function handleMessage(
     // classifier/memory pipeline. Supports multi-step actionable flows.
     if (channel === 'telegram' && !lightweightOnboarding) {
       const taskReply = await handleTaskReply(channelUserId, userMessage).catch(err => {
-        console.warn('[handler] Task orchestrator reply handling failed, continuing normal pipeline:', safeError(err))
+        log.warn({ err: safeError(err) }, 'Task orchestrator reply handling failed, continuing normal pipeline')
         return { handled: false as const } as const
       })
       if (taskReply.handled && taskReply.response) {
@@ -651,14 +654,14 @@ export async function handleMessage(
       )
 
     if (!lightweightOnboarding) {
-      console.log('[handler] Classification:', {
+      log.info({
         complexity: classification.message_complexity,
         needsTool: classification.needs_tool,
         toolHint: classification.tool_hint,
         skipMemory: classification.skip_memory,
         skipGraph: classification.skip_graph,
         skipCognitive: classification.skip_cognitive,
-      })
+      }, 'Classification')
     }
 
     // ─── Rejection guard: clear parked tool + media context when user rejects ─
@@ -716,9 +719,9 @@ export async function handleMessage(
         classification.skip_memory
           ? Promise.resolve([])
           : scoredMemorySearch(searchUserIds.length > 1 ? searchUserIds : user.userId, memoryQuery, 5).catch(err => {
-            console.warn('[handler] Composite memory search failed, falling back to cosine:', safeError(err))
+            log.warn({ err: safeError(err) }, 'Composite memory search failed, falling back to cosine')
             return searchMemories(searchUserIds.length > 1 ? searchUserIds : user.userId, memoryQuery, 5).catch(err2 => {
-              console.error('[handler] Memory search failed:', safeError(err2))
+              log.error({ err: safeError(err2) }, 'Memory search failed')
               return [] as Awaited<ReturnType<typeof searchMemories>>
             })
           }),
@@ -726,22 +729,22 @@ export async function handleMessage(
         classification.skip_graph
           ? Promise.resolve([])
           : searchGraph(searchUserIds.length > 1 ? searchUserIds : user.userId, userMessage, 2, 10).catch(err => {
-            console.error('[handler] Graph search failed:', safeError(err))
+            log.error({ err: safeError(err) }, 'Graph search failed')
             return [] as Awaited<ReturnType<typeof searchGraph>>
           }),
         // Load user preferences
         loadPreferences(pool, user.userId).catch(err => {
-          console.error('[handler] Preferences load failed:', safeError(err))
+          log.error({ err: safeError(err) }, 'Preferences load failed')
           return {}
         }),
         // Fetch active conversation goal
         getActiveGoal(user.userId, session.sessionId).catch(err => {
-          console.error('[handler] Goal fetch failed:', safeError(err))
+          log.error({ err: safeError(err) }, 'Goal fetch failed')
           return null
         }),
         // Fetch agenda stack (top priorities) — separate from classifier activeGoal.
         agendaPlanner.getStack(user.userId, session.sessionId).catch(err => {
-          console.error('[handler] Agenda stack fetch failed:', safeError(err))
+          log.error({ err: safeError(err) }, 'Agenda stack fetch failed')
           return []
         }),
         // Pulse engagement state — non-blocking read from in-memory hot cache
@@ -783,10 +786,10 @@ export async function handleMessage(
           pulseScore: 0,
         })
           .then(output => {
-            console.log(`[Fusion/Reactive] user=${user.userId} route=${output.decision} confidence=${output.confidence.toFixed(2)} proactive=${output.proactiveContext?.length ?? 0} invalidated=${output.invalidatedStimuli.length}`)
+            log.info({ userId: user.userId, route: output.decision, confidence: output.confidence.toFixed(2), proactive: output.proactiveContext?.length ?? 0, invalidated: output.invalidatedStimuli.length }, 'Fusion/Reactive')
           })
-          .catch(err => console.error('[Fusion/Reactive] error:', (err as Error).message))
-      ).catch(err => console.error('[Fusion/Reactive] import error:', (err as Error).message))
+          .catch(err => log.error({ err: (err as Error).message }, 'Fusion/Reactive error'))
+      ).catch(err => log.error({ err: (err as Error).message }, 'Fusion/Reactive import error'))
     }
 
     // ─── Step 7: Brain hooks — route message (Dev 1) ──────────────
@@ -973,7 +976,7 @@ export async function handleMessage(
           }
 
         const proactiveResult = await brainHooks.executeToolPipeline(proactiveDecision, routeContext).catch(err => {
-          console.warn('[handler] Proactive onboarding tool call failed:', safeError(err))
+          log.warn({ err: safeError(err) }, 'Proactive onboarding tool call failed')
           return null
         })
 
@@ -1051,12 +1054,12 @@ export async function handleMessage(
         topicStrategy,
       })
     } catch (err) {
-      console.error('[handler] Personality composition failed, using static SOUL.md', safeError(err))
+      log.error({ err: safeError(err) }, 'Personality composition failed, using static SOUL.md')
       systemPromptComposed = getRawSoulPrompt()
     }
 
     // Structured logging for debug
-    console.log('[handler] Prompt composed', {
+    log.info({
       complexity: classification.message_complexity,
       prefCount: Object.keys(preferences).length,
       memoryCount: memories.length,
@@ -1068,7 +1071,7 @@ export async function handleMessage(
       pulseState: pulseEngagementState,
       hasToolResult: !!toolResultStr,
       promptLength: systemPromptComposed.length,
-    })
+    }, 'Prompt composed')
 
     // ─── Step 10: Build messages for Groq ─────────────────────────
     // Simple: 6 messages (3 exchanges) — no context needed for "hi", "ok", "thanks"
@@ -1091,7 +1094,7 @@ export async function handleMessage(
     let estimatedTokens = estimateTokens(messages)
 
     if (estimatedTokens > MAX_PROMPT_TOKENS) {
-      console.warn(`[handler] Prompt too large (~${Math.round(estimatedTokens)} tokens). Truncating...`)
+      log.warn({ estimatedTokens: Math.round(estimatedTokens) }, 'Prompt too large, truncating')
 
       // Strategy 1: Truncate tool results in the system prompt (biggest offender)
       if (toolResultStr && toolResultStr.length > 800) {
@@ -1125,7 +1128,7 @@ export async function handleMessage(
         estimatedTokens = estimateTokens(messages)
       }
 
-      console.log(`[handler] After truncation: ~${Math.round(estimatedTokens)} tokens, history=${historyLimit}`)
+      log.info({ estimatedTokens: Math.round(estimatedTokens), historyLimit }, 'After truncation')
     }
 
     // ─── Step 11: Call Tier 2 (70B) + inline media fetch — truly concurrent ──
@@ -1183,7 +1186,7 @@ export async function handleMessage(
       ]),
     ])
 
-    console.log(`[handler] Tier 2 response from ${tier2Provider}${inlineMediaItem ? ` | inline media: ${inlineMediaItem.type}` : ''}`)
+    log.info({ tier2Provider, inlineMediaType: inlineMediaItem?.type ?? null }, 'Tier 2 response')
 
     let rawResponse = tier2Response
 
@@ -1205,22 +1208,22 @@ export async function handleMessage(
       const questionLikeCount = countQuestionLikeSentences(generated)
       const severeStepDrift = generated.length > 560 || questionLikeCount > 1
       if (severeStepDrift) {
-        console.warn('[handler] Onboarding drift fallback applied', {
+        log.warn({
           userId: user.userId,
           generatedLength: generated.length,
           questionLikeCount,
           preview: generated.slice(0, 140),
-        })
+        }, 'Onboarding drift fallback applied')
         assistantResponse = onboardingResult.reply
       }
     }
 
     if (needsHumanReview(filterResult)) {
-      console.error('[SECURITY] Output filtered for review:', {
+      log.error({
         userId: user.userId,
         reason: filterResult.reason,
         originalPreview: rawResponse.slice(0, 200),
-      })
+      }, 'Output filtered for review')
     }
 
     // ─── Step 14: Store messages in session ────────────────────────
@@ -1237,7 +1240,7 @@ export async function handleMessage(
     // bias the first real conversational turn after onboarding completes.
     if (onboardingActive && onboardingResult?.onboardingCompleted) {
       await clearSessionMessages(session.sessionId).catch(err => {
-        console.warn('[handler] Failed to clear onboarding session history:', safeError(err))
+        log.warn({ err: safeError(err) }, 'Failed to clear onboarding session history')
       })
     }
 
@@ -1276,7 +1279,7 @@ export async function handleMessage(
             userMessage,
             classification,
           ).catch(err => {
-            console.error('[handler] Topic intent processing failed:', err)
+            log.error({ err }, 'Topic intent processing failed')
           })
         }
 
@@ -1286,7 +1289,7 @@ export async function handleMessage(
           topicIntentService.completeTopic(user.userId, executingTopic.id)
             .then(() => logTopicCompleted(user.userId, executingTopic!.id, executingTopic!.topic))
             .catch(err => {
-              console.error('[handler] Topic completion failed:', err)
+              log.error({ err }, 'Topic completion failed')
             })
         }
 
@@ -1297,7 +1300,7 @@ export async function handleMessage(
           previousMessageAt,
           classifierSignal: classification.userSignal,
         }).catch(err => {
-          console.error('[handler] Pulse scoring failed:', safeError(err))
+          log.error({ err: safeError(err) }, 'Pulse scoring failed')
         })
 
         agendaPlanner.evaluate({
@@ -1312,7 +1315,7 @@ export async function handleMessage(
           activeToolName: routeDecision?.toolName ?? undefined,
           hasToolResult: !!toolResultStr,
         }).catch(err => {
-          console.error('[handler] Agenda planner evaluation failed:', safeError(err))
+          log.error({ err: safeError(err) }, 'Agenda planner evaluation failed')
         })
       })
     }
@@ -1389,9 +1392,9 @@ export async function handleMessage(
         : (toolExtractedMedia ?? fallbackMediaFromContext ?? venuePreviewMedia))
 
     // Diagnostic logging for media pipeline
-    console.log(`[handler] Media pipeline: toolName=${routeDecision.toolName} | inlineMediaItem=${!!inlineMediaItem} | toolExtracted=${toolExtractedMedia?.length ?? 0} | fallbackFromCtx=${fallbackMediaFromContext?.length ?? 0} | venuePreview=${venuePreviewMedia?.length ?? 0} | final=${resolvedMedia?.length ?? 0}`)
+    log.debug({ toolName: routeDecision.toolName, inlineMediaItem: !!inlineMediaItem, toolExtracted: toolExtractedMedia?.length ?? 0, fallbackFromCtx: fallbackMediaFromContext?.length ?? 0, venuePreview: venuePreviewMedia?.length ?? 0, final: resolvedMedia?.length ?? 0 }, 'Media pipeline')
     if (resolvedMedia?.length) {
-      console.log(`[handler] Media URLs: ${resolvedMedia.map(m => m.url?.substring(0, 80)).join(' | ')}`)
+      log.debug({ urls: resolvedMedia.map(m => m.url?.substring(0, 80)) }, 'Media URLs')
     }
 
     return {
@@ -1405,7 +1408,7 @@ export async function handleMessage(
     }
 
   } catch (error) {
-    console.error('[ERROR] Message handling failed:', safeError(error))
+    log.error({ err: safeError(error) }, 'Message handling failed')
     return { text: "Oops, something went wrong on my end! Mind trying that again? 😅" }
   }
 }
@@ -1483,7 +1486,7 @@ async function handleFriendCommand(
 
     return '👥 **Friend Commands:**\n`/friend` — list friends\n`/friend add <username>` — add friend\n`/friend remove <username>` — remove friend\n`/friend accept <username>` — accept request'
   } catch (error) {
-    console.error('[handler] Friend command failed:', safeError(error))
+    log.error({ err: safeError(error) }, 'Friend command failed')
     return "Something went wrong with the friend command. Please try again!"
   }
 }
@@ -1564,7 +1567,7 @@ async function handleSquadCommand(
 
     return '👥 **Squad Commands:**\n`/squad` — list squads\n`/squad create <name>` — create squad\n`/squad invite <squad> <user>` — invite member\n`/squad join <name>` — accept invite\n`/squad leave <name>` — leave squad'
   } catch (error) {
-    console.error('[handler] Squad command failed:', safeError(error))
+    log.error({ err: safeError(error) }, 'Squad command failed')
     return "Something went wrong with the squad command. Please try again!"
   }
 }
@@ -1593,7 +1596,7 @@ async function handleLinkCommand(
     }
     return result.message
   } catch (error) {
-    console.error('[handler] Link command failed:', safeError(error))
+    log.error({ err: safeError(error) }, 'Link command failed')
     return "Something went wrong with the link command. Please try again!"
   }
 }

@@ -15,6 +15,9 @@
 
 import type { ToolExecutionResult } from '../hooks.js'
 import { getWeather } from './weather.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'ride-compare' })
 
 // ─── Rate Card Config (Bengaluru, Feb 2026) ───────────────────────────────────
 
@@ -261,7 +264,7 @@ async function getDistanceMatrix(origin: string, destination: string): Promise<D
         routeCache.set(cacheKey, { result, expiresAt: Date.now() + ROUTE_CACHE_TTL })
         return result
     } catch (err: any) {
-        console.warn(`[Ride Compare] Google API failed (${err.message}), trying Haversine fallback`)
+        log.warn({ err }, 'Google API failed, trying Haversine fallback')
         const fallback = haversineEstimate(origin, destination)
         if (fallback) return fallback
         throw new Error(`Could not estimate distance from "${origin}" to "${destination}". Try using recognizable Bengaluru area names.`)
@@ -362,7 +365,7 @@ export async function compareRides(params: RideCompareParams): Promise<ToolExecu
             },
         }
     } catch (error: any) {
-        console.error('[Ride Compare] Error:', error)
+        log.error({ err: error }, 'Ride compare error')
         return {
             success: false,
             data: null,

@@ -1,3 +1,7 @@
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'aws-config' })
+
 export interface AwsConfig {
   /** Whether AWS is configured (has credentials) */
   readonly enabled: boolean
@@ -130,9 +134,9 @@ export function getAwsConfig(): AwsConfig {
   if (!cached) {
     cached = loadConfig()
     if (cached.enabled) {
-      console.log(`[AWS] Configured — region=${cached.region}`)
+      log.info({ region: cached.region }, 'Configured')
     } else {
-      console.log('[AWS] Not configured — all services will use local fallbacks')
+      log.info('Not configured — all services will use local fallbacks')
     }
   }
   return cached

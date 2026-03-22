@@ -1,4 +1,7 @@
 import { getAwsConfig } from './aws-config.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'aws-clients' })
 
 // ─── Subagent Type ───────────────────────────────────────────────────────────
 
@@ -71,10 +74,10 @@ export class AwsClientFactory {
                         { marshallOptions: { removeUndefinedValues: true, convertClassInstanceToMap: true } },
                     )
 
-                    console.log(`${this.tag('DynamoDB')} client initialized`)
+                    log.info(`${this.tag('DynamoDB')} client initialized`)
                     return this.dynamoDocClient
                 } catch (err) {
-                    console.error(`${this.tag('DynamoDB')} failed to initialize:`, err)
+                    log.error({ err }, `${this.tag('DynamoDB')} failed to initialize`)
                     this.dynamoDocClientInitPromise = null
                     return null
                 }
@@ -104,10 +107,10 @@ export class AwsClientFactory {
                         region: config.bedrock.region,
                         credentials: config.credentials ?? undefined,
                     })
-                    console.log(`${this.tag('Bedrock')} client initialized — region=${config.bedrock.region} model=${config.bedrock.modelId}`)
+                    log.info({ region: config.bedrock.region, modelId: config.bedrock.modelId }, `${this.tag('Bedrock')} client initialized`)
                     return this.bedrockClient
                 } catch (err) {
-                    console.error(`${this.tag('Bedrock')} failed to initialize:`, err)
+                    log.error({ err }, `${this.tag('Bedrock')} failed to initialize`)
                     this.bedrockInitPromise = null
                     return null
                 }
@@ -134,10 +137,10 @@ export class AwsClientFactory {
                 try {
                     const { SNSClient } = await import('@aws-sdk/client-sns')
                     this.snsClient = new SNSClient({ region: config.region, credentials: config.credentials ?? undefined })
-                    console.log(`${this.tag('SNS')} client initialized`)
+                    log.info(`${this.tag('SNS')} client initialized`)
                     return this.snsClient
                 } catch (err) {
-                    console.error(`${this.tag('SNS')} failed to initialize:`, err)
+                    log.error({ err }, `${this.tag('SNS')} failed to initialize`)
                     this.snsInitPromise = null
                     return null
                 }
@@ -164,10 +167,10 @@ export class AwsClientFactory {
                 try {
                     const { S3Client } = await import('@aws-sdk/client-s3')
                     this.s3Client = new S3Client({ region: config.region, credentials: config.credentials ?? undefined })
-                    console.log(`${this.tag('S3')} client initialized`)
+                    log.info(`${this.tag('S3')} client initialized`)
                     return this.s3Client
                 } catch (err) {
-                    console.error(`${this.tag('S3')} failed to initialize:`, err)
+                    log.error({ err }, `${this.tag('S3')} failed to initialize`)
                     this.s3InitPromise = null
                     return null
                 }
@@ -194,10 +197,10 @@ export class AwsClientFactory {
                 try {
                     const { CloudWatchClient } = await import('@aws-sdk/client-cloudwatch')
                     this.cloudwatchClient = new CloudWatchClient({ region: config.region, credentials: config.credentials ?? undefined })
-                    console.log(`${this.tag('CloudWatch')} client initialized`)
+                    log.info(`${this.tag('CloudWatch')} client initialized`)
                     return this.cloudwatchClient
                 } catch (err) {
-                    console.error(`${this.tag('CloudWatch')} failed to initialize:`, err)
+                    log.error({ err }, `${this.tag('CloudWatch')} failed to initialize`)
                     this.cloudwatchInitPromise = null
                     return null
                 }
@@ -224,10 +227,10 @@ export class AwsClientFactory {
                 try {
                     const { EventBridgeClient } = await import('@aws-sdk/client-eventbridge')
                     this.eventBridgeClient = new EventBridgeClient({ region: config.region, credentials: config.credentials ?? undefined })
-                    console.log(`${this.tag('EventBridge')} client initialized`)
+                    log.info(`${this.tag('EventBridge')} client initialized`)
                     return this.eventBridgeClient
                 } catch (err) {
-                    console.error(`${this.tag('EventBridge')} failed to initialize:`, err)
+                    log.error({ err }, `${this.tag('EventBridge')} failed to initialize`)
                     this.eventBridgeInitPromise = null
                     return null
                 }

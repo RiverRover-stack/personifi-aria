@@ -17,6 +17,9 @@ import { addMemories } from '../memory-store.js'
 import { addToGraph } from '../graph-memory.js'
 import { processUserMessage } from '../memory.js'
 import { updateConversationGoal } from '../cognitive.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'memory-queue' })
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -66,7 +69,7 @@ export async function enqueueMemoryWrite(
         )
     } catch (err) {
         // Log but never throw — a queue insertion failure must not break the response path
-        console.error('[archivist/queue] Failed to enqueue memory write:', (err as Error).message)
+        log.error({ err }, 'Failed to enqueue memory write')
     }
 }
 
@@ -137,14 +140,14 @@ export async function processMemoryWriteQueue(batchSize = 20): Promise<number> {
                 )
 
                 if (failed) {
-                    console.error(
-                        `[archivist/queue] Item ${item.queueId} exhausted retries (${item.operationType}):`,
-                        msg
+                    log.error(
+                        { err, queueId: item.queueId, operationType: item.operationType },
+                        `Item exhausted retries`,
                     )
                 } else {
-                    console.warn(
-                        `[archivist/queue] Item ${item.queueId} attempt ${item.attempts}/${item.maxAttempts} failed — will retry:`,
-                        msg
+                    log.warn(
+                        { queueId: item.queueId, attempt: item.attempts, maxAttempts: item.maxAttempts },
+                        'Item attempt failed — will retry',
                     )
                 }
             }
@@ -159,8 +162,9 @@ export async function processMemoryWriteQueue(batchSize = 20): Promise<number> {
     )
 
     if (successCount > 0 || claimed.rows.length > 0) {
-        console.log(
-            `[archivist/queue] Processed ${successCount}/${claimed.rows.length} items`
+        log.info(
+            { successCount, total: claimed.rows.length },
+            'Processed queue items',
         )
     }
 
