@@ -144,13 +144,9 @@ describe('weather_check', () => {
 describe('food_finder', () => {
     const tool = ALPHA_TOOL_DEFINITIONS.find(t => t.function.name === 'food_finder')!
 
-    it('requires only query', () => {
-        expect(tool.function.parameters.required).toEqual(['query'])
-    })
-
-    it('location is optional', () => {
-        expect(tool.function.parameters.required).not.toContain('location')
-        expect(tool.function.parameters.properties).toHaveProperty('location')
+    it('requires query and location', () => {
+        expect(tool.function.parameters.required).toContain('query')
+        expect(tool.function.parameters.required).toContain('location')
     })
 })
 

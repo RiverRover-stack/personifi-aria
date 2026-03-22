@@ -5,14 +5,17 @@
  * This is the only file that knows the name mapping between Alpha's curated
  * schema names and the legacy tool registry names.
  *
- * Dev3's tool-sandbox.ts calls sandboxToolCall() before reaching here.
- * This file does NOT validate — it only executes.
+ * All calls flow through executeThroughSandbox() in ./tool-sandbox.ts, which
+ * enforces rate limiting, timeouts, retries, output compression, and audit
+ * logging.  This file does NOT validate — it only maps names and dispatches.
  */
 
 import { logger as rootLogger } from './logger.js'
-import { bodyHooks } from './tools/index.js'
 import { ALPHA_TOOL_NAMES } from './tool-definitions.js'
+import { executeThroughSandbox } from './tool-sandbox.js'
+import { parseToolArgs } from './tool-arg-schemas.js'
 import type { ToolExecutionResult } from './hooks.js'
+import type { SandboxConfig } from './tool-sandbox.js'
 
 const log = rootLogger.child({ module: 'tool-executor' })
 
@@ -38,18 +41,35 @@ const ALPHA_TO_LEGACY: Record<string, string> = {
 /**
  * Execute an Alpha tool by its schema name.
  *
- * @param name   Alpha tool name (e.g. "cab_compare")
- * @param args   Validated, coerced arguments from the sandbox
- * @returns      ToolExecutionResult from the underlying tool
+ * Safely parses and validates raw arguments via Zod (parseToolArgs), then
+ * resolves the Alpha name → legacy name and routes through
+ * executeThroughSandbox() which enforces rate limiting, timeouts, retries,
+ * output compression, and audit logging.
+ *
+ * @param name    Alpha tool name (e.g. "cab_compare")
+ * @param rawArgs Raw JSON string from function.arguments, or a plain object
+ * @param userId  Authenticated user ID — required for rate limiting and audit
+ * @param config  Optional sandbox overrides (timeout, retries, output size)
+ * @returns       ToolExecutionResult from the underlying tool
  */
 export async function executeAlphaTool(
     name: string,
-    args: Record<string, unknown>
+    rawArgs: unknown,
+    userId: string,
+    config?: SandboxConfig,
 ): Promise<ToolExecutionResult> {
     if (!ALPHA_TOOL_NAMES.has(name)) {
         log.warn({ tool: name }, 'executeAlphaTool called with unknown tool name')
         return { success: false, data: null, error: `Unknown Alpha tool: ${name}` }
     }
+
+    // ── Argument validation ─────────────────────────────────────────────────
+    const parsed = parseToolArgs(name, rawArgs)
+    if (!parsed.ok) {
+        log.warn({ tool: name, reason: parsed.error }, 'argument validation failed')
+        return { success: false, data: null, error: parsed.error }
+    }
+    const args = parsed.args
 
     const legacyName = ALPHA_TO_LEGACY[name]
 
@@ -59,22 +79,19 @@ export async function executeAlphaTool(
         return buildStubResult(name)
     }
 
+    // ── cab_compare: translate pickup → origin (legacy tool uses origin) ───
     // ── event_lookup: inject type hint ──────────────────────────────────────
-    const resolvedArgs = name === 'event_lookup'
-        ? { ...args, query: `events: ${args.query ?? ''}`.trim(), openNow: false }
-        : args
-
-    const start = Date.now()
-    log.debug({ tool: name, legacyTool: legacyName }, 'executing')
-
-    try {
-        const result = await bodyHooks.executeTool(legacyName, resolvedArgs)
-        log.debug({ tool: name, success: result.success, latencyMs: Date.now() - start }, 'done')
-        return result
-    } catch (err) {
-        log.error({ tool: name, err }, 'tool execution threw unexpectedly')
-        return { success: false, data: null, error: `Tool execution failed: ${name}` }
+    let resolvedArgs = args
+    if (name === 'cab_compare') {
+        const { pickup, ...rest } = args
+        resolvedArgs = { ...rest, origin: pickup }
+    } else if (name === 'event_lookup') {
+        resolvedArgs = { ...args, query: `events: ${args.query ?? ''}`.trim(), openNow: false }
     }
+
+    log.debug({ tool: name, legacyTool: legacyName }, 'routing through sandbox')
+
+    return executeThroughSandbox(name, { legacyName, args: resolvedArgs }, userId, config)
 }
 
 // ─── Stub Helpers ─────────────────────────────────────────────────────────────

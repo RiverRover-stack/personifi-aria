@@ -99,10 +99,10 @@ export const ALPHA_TOOL_DEFINITIONS: ProviderTool[] = [
                     },
                     location: {
                         type: 'string',
-                        description: 'Area to search in. Omit to use user\'s home location.',
+                        description: 'Area to search in (e.g. "Koramangala", "Andheri West"). Required — ask the user if unknown.',
                     },
                 },
-                required: ['query'],
+                required: ['query', 'location'],
             },
         },
     },
