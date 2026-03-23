@@ -9,6 +9,7 @@
  *   - User B accepts → status 'accepted' on both edges (A→B + B→A)
  */
 
+import { randomBytes } from 'node:crypto'
 import { getPool } from '../character/session-store.js'
 import type { FriendInfo, Relationship, RelationshipStatus } from './types.js'
 
@@ -280,4 +281,55 @@ export async function resolveUserByPlatformId(
         [channel, channelUserId],
     )
     return rows.length > 0 ? rows[0].user_id : null
+}
+
+// ─── Invite Code System ──────────────────────────────────────────────────────
+
+/**
+ * Generate a single-use 8-char hex invite code for the given user.
+ * Stores it in invite_codes table.
+ */
+export async function generateInviteCode(inviterUserId: string): Promise<string> {
+    const pool = getPool()
+    const code = randomBytes(4).toString('hex') // 8 hex chars
+    await pool.query(
+        `INSERT INTO invite_codes (code, inviter_user_id) VALUES ($1, $2)
+         ON CONFLICT (code) DO NOTHING`,
+        [code, inviterUserId]
+    )
+    return code
+}
+
+/**
+ * Resolve and consume a single-use invite code.
+ * Creates a bilateral friendship between inviter and new user.
+ */
+export async function resolveInviteCode(
+    code: string,
+    newUserId: string,
+): Promise<{ success: boolean; inviterUserId?: string }> {
+    const pool = getPool()
+    const { rows } = await pool.query<{ inviter_user_id: string; used_by: string | null }>(
+        `SELECT inviter_user_id, used_by FROM invite_codes WHERE code = $1`,
+        [code]
+    )
+    if (!rows.length || rows[0].used_by !== null) return { success: false }
+
+    const inviterUserId = rows[0].inviter_user_id
+    if (inviterUserId === newUserId) return { success: false }
+
+    // Mark code as used — check rowCount to guard against concurrent consumers
+    const updateResult = await pool.query(
+        `UPDATE invite_codes SET used_by = $1, used_at = NOW() WHERE code = $2 AND used_by IS NULL`,
+        [newUserId, code]
+    )
+    if ((updateResult.rowCount ?? 0) === 0) return { success: false }
+
+    // Create bilateral friendship (fire-and-forget errors — addFriend is idempotent)
+    await Promise.allSettled([
+        addFriend(inviterUserId, newUserId),
+        addFriend(newUserId, inviterUserId),
+    ])
+
+    return { success: true, inviterUserId }
 }

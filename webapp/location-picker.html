@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Pick Location</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--tg-theme-bg-color, #ffffff);
+      color: var(--tg-theme-text-color, #000000);
+      padding: 16px;
+      min-height: 100vh;
+    }
+    h2 { font-size: 17px; font-weight: 600; margin-bottom: 16px; }
+    .section { margin-bottom: 20px; }
+    .section-title {
+      font-size: 12px;
+      color: var(--tg-theme-hint-color, #8e8e93);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      margin-bottom: 8px;
+      font-weight: 500;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1.5px solid var(--tg-theme-hint-color, #c7c7cc);
+      background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+      color: var(--tg-theme-text-color, #000000);
+      font-size: 16px;
+      outline: none;
+    }
+    input[type="text"]:focus {
+      border-color: var(--tg-theme-button-color, #007aff);
+    }
+    .saved-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: opacity 0.15s;
+      border: 2px solid transparent;
+    }
+    .saved-item:active { opacity: 0.65; }
+    .saved-item.selected {
+      border-color: var(--tg-theme-button-color, #007aff);
+    }
+    .saved-item-icon { font-size: 20px; flex-shrink: 0; }
+    .saved-item-label { font-weight: 600; font-size: 15px; }
+    .saved-item-area { font-size: 13px; color: var(--tg-theme-hint-color, #8e8e93); margin-top: 1px; }
+    #suggestions {
+      list-style: none;
+      background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+      border-radius: 10px;
+      margin-top: 6px;
+      overflow: hidden;
+    }
+    #suggestions li {
+      padding: 11px 14px;
+      cursor: pointer;
+      font-size: 14px;
+      border-bottom: 1px solid rgba(0,0,0,0.06);
+      line-height: 1.3;
+    }
+    #suggestions li:last-child { border-bottom: none; }
+    #suggestions li:active { opacity: 0.65; }
+    .label-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .label-row input { flex: 1; }
+    .gps-btn {
+      width: 100%;
+      padding: 13px;
+      border-radius: 10px;
+      border: 1.5px solid var(--tg-theme-hint-color, #c7c7cc);
+      background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+      color: var(--tg-theme-text-color, #000000);
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      text-align: center;
+      transition: opacity 0.15s;
+    }
+    .gps-btn:active { opacity: 0.65; }
+    .confirm-btn {
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      background: var(--tg-theme-button-color, #007aff);
+      color: var(--tg-theme-button-text-color, #ffffff);
+      border: none;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 4px;
+      transition: opacity 0.15s;
+    }
+    .confirm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .confirm-btn:not(:disabled):active { opacity: 0.8; }
+    .selected-display {
+      padding: 10px 14px;
+      background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+      border-radius: 8px;
+      font-size: 14px;
+      margin-top: 8px;
+      color: var(--tg-theme-hint-color, #8e8e93);
+    }
+  </style>
+</head>
+<body>
+  <h2>📍 Pick a Location</h2>
+
+  <div class="section" id="savedSection" style="display:none">
+    <div class="section-title">Saved</div>
+    <div id="savedList"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Search</div>
+    <input type="text" id="searchInput" placeholder="Type area name (e.g. Koramangala)" autocomplete="off" spellcheck="false">
+    <ul id="suggestions"></ul>
+    <div id="selectedDisplay" class="selected-display" style="display:none"></div>
+    <div class="label-row" id="labelRow" style="display:none">
+      <input type="text" id="labelInput" placeholder="Save as (e.g. Home, Office)">
+    </div>
+  </div>
+
+  <div class="section">
+    <button class="gps-btn" id="gpsBtn">📡 Use Current Location</button>
+  </div>
+
+  <button class="confirm-btn" id="confirmBtn" disabled>Confirm Location</button>
+
+  <script>
+    const tg = window.Telegram.WebApp
+    tg.ready()
+    tg.expand()
+
+    const BASE_URL = window.location.origin
+    const userId = tg.initDataUnsafe?.user?.id
+
+    let selected = null
+
+    // ── Load saved locations ──────────────────────────────────────────────────
+    async function loadSaved() {
+      if (!userId) return
+      try {
+        const res = await fetch(`${BASE_URL}/api/user/${userId}/locations`, {
+          headers: { 'X-Telegram-Init-Data': tg.initData || '' }
+        })
+        if (!res.ok) return
+        const locs = await res.json()
+        if (!locs.length) return
+        const container = document.getElementById('savedList')
+        container.innerHTML = locs.map(l => `
+          <div class="saved-item" onclick="selectSaved(this, ${JSON.stringify(l).replace(/"/g, '&quot;')})">
+            <span class="saved-item-icon">${l.is_default ? '⭐' : '📍'}</span>
+            <div>
+              <div class="saved-item-label">${escHtml(l.label)}</div>
+              <div class="saved-item-area">${escHtml(l.area)}</div>
+            </div>
+          </div>`).join('')
+        document.getElementById('savedSection').style.display = 'block'
+      } catch (e) {
+        // saved locations are optional — fail silently
+      }
+    }
+
+    function selectSaved(el, loc) {
+      selected = { type: 'location', action: 'select', area: loc.area, lat: loc.lat, lng: loc.lng, label: loc.label }
+      document.querySelectorAll('.saved-item').forEach(e => e.classList.remove('selected'))
+      el.classList.add('selected')
+      showSelectedDisplay(loc.area)
+      enableConfirm()
+    }
+
+    // ── Search via Nominatim (OpenStreetMap, no API key needed) ───────────────
+    let searchTimer
+    document.getElementById('searchInput').addEventListener('input', function () {
+      clearTimeout(searchTimer)
+      const q = this.value.trim()
+      if (q.length < 2) {
+        document.getElementById('suggestions').innerHTML = ''
+        return
+      }
+      searchTimer = setTimeout(() => searchLocation(q), 400)
+    })
+
+    async function searchLocation(q) {
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=6&addressdetails=0`,
+          { headers: { 'Accept-Language': 'en' } }
+        )
+        const results = await res.json()
+        const ul = document.getElementById('suggestions')
+        if (!results.length) {
+          ul.innerHTML = '<li style="color:var(--tg-theme-hint-color,#888)">No results — try a different name</li>'
+          return
+        }
+        ul.innerHTML = results.map(r => `
+          <li onclick="selectSearchResult(${JSON.stringify(r.display_name).replace(/'/g, "&#39;")}, ${r.lat}, ${r.lon})">
+            ${escHtml(r.display_name)}
+          </li>`).join('')
+      } catch {
+        // search failure is non-critical
+      }
+    }
+
+    function selectSearchResult(area, lat, lng) {
+      selected = { type: 'location', action: 'select', area, lat: parseFloat(lat), lng: parseFloat(lng) }
+      document.getElementById('searchInput').value = area
+      document.getElementById('suggestions').innerHTML = ''
+      document.getElementById('labelRow').style.display = 'flex'
+      document.querySelectorAll('.saved-item').forEach(e => e.classList.remove('selected'))
+      showSelectedDisplay(area)
+      enableConfirm()
+    }
+
+    // ── GPS via LocationManager (Bot API 8.0+) or browser geolocation ─────────
+    document.getElementById('gpsBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('gpsBtn')
+      btn.textContent = '⏳ Getting location...'
+      btn.disabled = true
+      try {
+        if (tg.isVersionAtLeast && tg.isVersionAtLeast('8.0') && tg.LocationManager) {
+          await new Promise((resolve, reject) => {
+            tg.LocationManager.init(() => {
+              tg.LocationManager.getLocation(loc => {
+                if (loc) {
+                  reverseAndSelect(loc.latitude, loc.longitude).then(resolve).catch(reject)
+                } else {
+                  reject(new Error('LocationManager returned null'))
+                }
+              })
+            })
+          })
+        } else {
+          const pos = await new Promise((resolve, reject) =>
+            navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 10000 })
+          )
+          await reverseAndSelect(pos.coords.latitude, pos.coords.longitude)
+        }
+      } catch {
+        btn.textContent = '📡 Use Current Location'
+        btn.disabled = false
+        document.getElementById('searchInput').focus()
+      }
+    })
+
+    async function reverseAndSelect(lat, lng) {
+      const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`)
+      const data = await res.json()
+      const area = data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`
+      selected = { type: 'location', action: 'select', area, lat, lng }
+      document.getElementById('searchInput').value = area
+      document.getElementById('suggestions').innerHTML = ''
+      document.getElementById('labelRow').style.display = 'flex'
+      document.getElementById('gpsBtn').textContent = '✅ Location acquired'
+      showSelectedDisplay(area)
+      enableConfirm()
+    }
+
+    // ── Confirm ───────────────────────────────────────────────────────────────
+    document.getElementById('confirmBtn').addEventListener('click', () => {
+      if (!selected) return
+      const label = document.getElementById('labelInput').value.trim()
+      if (label) {
+        selected.action = 'save'
+        selected.label = label
+      }
+      tg.sendData(JSON.stringify(selected))
+    })
+
+    function enableConfirm() {
+      const btn = document.getElementById('confirmBtn')
+      btn.disabled = false
+    }
+
+    function showSelectedDisplay(area) {
+      const el = document.getElementById('selectedDisplay')
+      el.style.display = 'block'
+      el.textContent = `Selected: ${area}`
+    }
+
+    function escHtml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    }
+
+    loadSaved()
+  </script>
+</body>
+</html>

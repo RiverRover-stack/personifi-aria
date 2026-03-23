@@ -357,14 +357,22 @@ export async function sendProactiveContent(
       })
       return true
     } else {
-      // Text-only proactive message
+      // Text-only proactive message — visual prefix + dismiss keyboard
+      const proactiveText = `💡 <i>Aria noticed something for you:</i>\n\n${caption}`
+      const proactiveKeyboard = {
+        inline_keyboard: [[
+          { text: '🔥 Tell me more', callback_data: 'hook:fire' },
+          { text: '👋 Not now', callback_data: 'dismiss_proactive' },
+        ]],
+      }
       const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId,
-          text: caption,
+          text: proactiveText,
           parse_mode: 'HTML',
+          reply_markup: proactiveKeyboard,
         }),
       })
       const data = await resp.json() as any

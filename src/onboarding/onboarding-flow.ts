@@ -63,6 +63,16 @@ Which part of Bengaluru are you usually in? (e.g. Koramangala, Indiranagar, Whit
 
     prefs_3: `Last one — travel style when you go somewhere new?`,
 
+    prefs_4: `What kind of entertainment gets you? 🎬`,
+
+    prefs_5: `When are you most active? ⏰`,
+
+    prefs_6: `Any dietary preferences or restrictions? 🥗`,
+
+    prefs_7: `How do you usually get around? 🚗`,
+
+    prefs_8: `Last thing — how do you like your updates? 📱`,
+
     friends: `Almost done! One thing that makes Aria way more useful — your friend circle.
 
 {existing_friends_msg}
@@ -105,6 +115,31 @@ const BUDGET_PREF_BUTTONS = [
 const TRAVEL_PREF_BUTTONS = [
     [{ text: '🎒 Backpacker', callback_data: 'pref_travel_backpacker' }, { text: '🏨 Comfort seeker', callback_data: 'pref_travel_comfort' }],
     [{ text: '✈️ Explorer', callback_data: 'pref_travel_explorer' }, { text: '🏖️ Leisure', callback_data: 'pref_travel_leisure' }],
+]
+
+const ENTERTAINMENT_PREF_BUTTONS = [
+    [{ text: '🎬 Movies/OTT', callback_data: 'pref_entertainment_movies_ott' }, { text: '🎵 Live Music', callback_data: 'pref_entertainment_live_music' }],
+    [{ text: '🎮 Gaming', callback_data: 'pref_entertainment_gaming' }, { text: '📚 Reading/Cafes', callback_data: 'pref_entertainment_reading_cafes' }],
+]
+
+const TIME_PREF_BUTTONS = [
+    [{ text: '🌅 Morning person', callback_data: 'pref_time_morning' }, { text: '🌙 Night owl', callback_data: 'pref_time_night_owl' }],
+    [{ text: '🕐 Flexible', callback_data: 'pref_time_flexible' }, { text: '📅 Weekend warrior', callback_data: 'pref_time_weekend' }],
+]
+
+const DIETARY_RESTRICTION_BUTTONS = [
+    [{ text: '🚫 None', callback_data: 'pref_dietrestrict_none' }, { text: '🥗 Vegetarian', callback_data: 'pref_dietrestrict_vegetarian' }, { text: '🌱 Vegan', callback_data: 'pref_dietrestrict_vegan' }],
+    [{ text: '🕌 Halal', callback_data: 'pref_dietrestrict_halal' }, { text: '✡️ Kosher', callback_data: 'pref_dietrestrict_kosher' }, { text: '🚫🥜 Allergies', callback_data: 'pref_dietrestrict_allergies' }],
+]
+
+const COMMUTE_PREF_BUTTONS = [
+    [{ text: '🚗 Car/cab', callback_data: 'pref_commute_car_cab' }, { text: '🛵 Two-wheeler', callback_data: 'pref_commute_two_wheeler' }],
+    [{ text: '🚇 Metro/bus', callback_data: 'pref_commute_metro_bus' }, { text: '🏠 Work from home', callback_data: 'pref_commute_wfh' }],
+]
+
+const COMMS_PREF_BUTTONS = [
+    [{ text: '📱 Quick updates', callback_data: 'pref_comms_quick' }, { text: '📝 Detailed', callback_data: 'pref_comms_detailed' }],
+    [{ text: '😄 Casual/fun', callback_data: 'pref_comms_casual' }, { text: '📊 Data-driven', callback_data: 'pref_comms_data_driven' }],
 ]
 
 // ─── DB helpers ───────────────────────────────────────────────────────────────
@@ -246,6 +281,11 @@ function decodePrefCallback(callbackData: string): { category: string; value: st
         food: 'dietary',
         budget: 'budget',
         travel: 'travel_style',
+        entertainment: 'entertainment',
+        time: 'time_preference',
+        dietrestrict: 'dietary_restriction',
+        commute: 'commute',
+        comms: 'communication',
     }
     const valueMap: Record<string, string> = {
         southindian: 'South Indian',
@@ -259,6 +299,28 @@ function decodePrefCallback(callbackData: string): { category: string; value: st
         comfort: 'Comfort seeker',
         explorer: 'Explorer',
         leisure: 'Leisure',
+        movies_ott: 'Movies/OTT',
+        live_music: 'Live Music',
+        gaming: 'Gaming',
+        reading_cafes: 'Reading/Cafes',
+        morning: 'Morning person',
+        night_owl: 'Night owl',
+        flexible: 'Flexible',
+        weekend: 'Weekend warrior',
+        none: 'None',
+        vegetarian: 'Vegetarian',
+        vegan: 'Vegan',
+        halal: 'Halal',
+        kosher: 'Kosher',
+        allergies: 'Has allergies',
+        car_cab: 'Car/cab',
+        two_wheeler: 'Two-wheeler',
+        metro_bus: 'Metro/bus',
+        wfh: 'Work from home',
+        quick: 'Quick updates',
+        detailed: 'Detailed',
+        casual: 'Casual/fun',
+        data_driven: 'Data-driven',
     }
     return {
         category: categoryMap[cat] ?? cat,
@@ -419,6 +481,127 @@ export async function handleOnboarding(
                 reply: STEP_MESSAGES.prefs_3,
                 buttons: TRAVEL_PREF_BUTTONS,
                 onboardingContext: 'Still collecting travel style. Ask only this question and keep the same buttons.',
+            })
+        }
+
+        await advanceOnboardingStep(userId, 'prefs_4')
+
+        return handledOnboarding({
+            reply: STEP_MESSAGES.prefs_4,
+            buttons: ENTERTAINMENT_PREF_BUTTONS,
+            stepCompleted: 'prefs_3',
+            onboardingContext: 'Travel style captured. Ask entertainment preference next with inline buttons.',
+        })
+    }
+
+    // ── Step: prefs_4 (entertainment) ────────────────────────────────────────
+    if (currentStep === 'prefs_4') {
+        if (callbackData) {
+            const decoded = decodePrefCallback(callbackData)
+            if (decoded) await saveUserPreference(userId, decoded.category, decoded.value)
+        } else if (inboundMessage.length > 1) {
+            await saveUserPreference(userId, 'entertainment', inboundMessage)
+        } else {
+            return handledOnboarding({
+                reply: STEP_MESSAGES.prefs_4,
+                buttons: ENTERTAINMENT_PREF_BUTTONS,
+                onboardingContext: 'Still collecting entertainment preference. Show the same buttons.',
+            })
+        }
+
+        await advanceOnboardingStep(userId, 'prefs_5')
+        return handledOnboarding({
+            reply: STEP_MESSAGES.prefs_5,
+            buttons: TIME_PREF_BUTTONS,
+            stepCompleted: 'prefs_4',
+            onboardingContext: 'Entertainment preference captured. Ask time preference next.',
+        })
+    }
+
+    // ── Step: prefs_5 (time preference) ──────────────────────────────────────
+    if (currentStep === 'prefs_5') {
+        if (callbackData) {
+            const decoded = decodePrefCallback(callbackData)
+            if (decoded) await saveUserPreference(userId, decoded.category, decoded.value)
+        } else if (inboundMessage.length > 1) {
+            await saveUserPreference(userId, 'time_preference', inboundMessage)
+        } else {
+            return handledOnboarding({
+                reply: STEP_MESSAGES.prefs_5,
+                buttons: TIME_PREF_BUTTONS,
+                onboardingContext: 'Still collecting time preference. Show the same buttons.',
+            })
+        }
+
+        await advanceOnboardingStep(userId, 'prefs_6')
+        return handledOnboarding({
+            reply: STEP_MESSAGES.prefs_6,
+            buttons: DIETARY_RESTRICTION_BUTTONS,
+            stepCompleted: 'prefs_5',
+            onboardingContext: 'Time preference captured. Ask dietary restrictions next.',
+        })
+    }
+
+    // ── Step: prefs_6 (dietary restrictions) ─────────────────────────────────
+    if (currentStep === 'prefs_6') {
+        if (callbackData) {
+            const decoded = decodePrefCallback(callbackData)
+            if (decoded) await saveUserPreference(userId, decoded.category, decoded.value)
+        } else if (inboundMessage.length > 1) {
+            await saveUserPreference(userId, 'dietary_restriction', inboundMessage)
+        } else {
+            return handledOnboarding({
+                reply: STEP_MESSAGES.prefs_6,
+                buttons: DIETARY_RESTRICTION_BUTTONS,
+                onboardingContext: 'Still collecting dietary restrictions. Show the same buttons.',
+            })
+        }
+
+        await advanceOnboardingStep(userId, 'prefs_7')
+        return handledOnboarding({
+            reply: STEP_MESSAGES.prefs_7,
+            buttons: COMMUTE_PREF_BUTTONS,
+            stepCompleted: 'prefs_6',
+            onboardingContext: 'Dietary restriction captured. Ask commute preference next.',
+        })
+    }
+
+    // ── Step: prefs_7 (commute) ───────────────────────────────────────────────
+    if (currentStep === 'prefs_7') {
+        if (callbackData) {
+            const decoded = decodePrefCallback(callbackData)
+            if (decoded) await saveUserPreference(userId, decoded.category, decoded.value)
+        } else if (inboundMessage.length > 1) {
+            await saveUserPreference(userId, 'commute', inboundMessage)
+        } else {
+            return handledOnboarding({
+                reply: STEP_MESSAGES.prefs_7,
+                buttons: COMMUTE_PREF_BUTTONS,
+                onboardingContext: 'Still collecting commute preference. Show the same buttons.',
+            })
+        }
+
+        await advanceOnboardingStep(userId, 'prefs_8')
+        return handledOnboarding({
+            reply: STEP_MESSAGES.prefs_8,
+            buttons: COMMS_PREF_BUTTONS,
+            stepCompleted: 'prefs_7',
+            onboardingContext: 'Commute preference captured. Ask communication style next — last pref step.',
+        })
+    }
+
+    // ── Step: prefs_8 (communication style) ──────────────────────────────────
+    if (currentStep === 'prefs_8') {
+        if (callbackData) {
+            const decoded = decodePrefCallback(callbackData)
+            if (decoded) await saveUserPreference(userId, decoded.category, decoded.value)
+        } else if (inboundMessage.length > 1) {
+            await saveUserPreference(userId, 'communication', inboundMessage)
+        } else {
+            return handledOnboarding({
+                reply: STEP_MESSAGES.prefs_8,
+                buttons: COMMS_PREF_BUTTONS,
+                onboardingContext: 'Still collecting communication style. Show the same buttons.',
             })
         }
 
