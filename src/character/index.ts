@@ -2,7 +2,9 @@
  * Character module barrel export
  */
 
-export { handleMessage, resetUserSession, saveUserLocation, type MessageResponse } from './handler.js'
+// Phase 2: handler-router selects Alpha (new) or Legacy (old) based on ALPHA_HANDLER_ENABLED flag
+export { handleMessage, type MessageResponse, type HandleMessageOptions } from './handler-router.js'
+export { resetUserSession, saveUserLocation } from './handler.js'
 export { initDatabase, closeDatabase } from './session-store.js'
 export { sanitizeInput, isPotentialAttack } from './sanitize.js'
 export { filterOutput, needsHumanReview } from './output-filter.js'
