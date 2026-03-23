@@ -1,7 +1,9 @@
 /**
  * Location utilities for Aria.
- * Handles GPS-based geocoding and "near me" detection.
+ * Handles GPS-based geocoding, "near me" detection, and saved locations CRUD.
  */
+
+import { getPool } from './character/session-store.js'
 
 export interface ResolvedLocation {
     lat: number
@@ -78,4 +80,70 @@ export function shouldRequestLocation(
     }
 
     return false
+}
+
+// ─── Saved Locations CRUD ────────────────────────────────────────────────────
+
+export interface SavedLocation {
+    id: string
+    label: string
+    area: string
+    lat: number
+    lng: number
+    is_default: boolean
+}
+
+export interface SavedLocationInput {
+    label: string
+    area: string
+    lat: number
+    lng: number
+    is_default?: boolean
+}
+
+export async function getSavedLocations(userId: string): Promise<SavedLocation[]> {
+    const pool = getPool()
+    const { rows } = await pool.query<SavedLocation>(
+        `SELECT id, label, area, lat, lng, is_default
+         FROM saved_locations
+         WHERE user_id = $1
+         ORDER BY is_default DESC, created_at ASC`,
+        [userId]
+    )
+    return rows
+}
+
+export async function upsertSavedLocation(userId: string, loc: SavedLocationInput): Promise<void> {
+    const pool = getPool()
+    await pool.query(
+        `INSERT INTO saved_locations (user_id, label, area, lat, lng, is_default, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+         ON CONFLICT (user_id, LOWER(label)) DO UPDATE SET
+             area = EXCLUDED.area,
+             lat = EXCLUDED.lat,
+             lng = EXCLUDED.lng,
+             is_default = EXCLUDED.is_default,
+             updated_at = NOW()`,
+        [userId, loc.label, loc.area, loc.lat, loc.lng, loc.is_default ?? false]
+    )
+}
+
+export async function deleteSavedLocation(userId: string, label: string): Promise<void> {
+    const pool = getPool()
+    await pool.query(
+        `DELETE FROM saved_locations WHERE user_id = $1 AND LOWER(label) = LOWER($2)`,
+        [userId, label]
+    )
+}
+
+export async function getDefaultLocation(userId: string): Promise<SavedLocation | null> {
+    const pool = getPool()
+    const { rows } = await pool.query<SavedLocation>(
+        `SELECT id, label, area, lat, lng, is_default
+         FROM saved_locations
+         WHERE user_id = $1 AND is_default = TRUE
+         LIMIT 1`,
+        [userId]
+    )
+    return rows[0] ?? null
 }

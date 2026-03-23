@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Aria Menu</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--tg-theme-bg-color, #ffffff);
+      color: var(--tg-theme-text-color, #000000);
+      padding: 20px 16px 24px;
+      min-height: 100vh;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .header-title {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .header-sub {
+      font-size: 13px;
+      color: var(--tg-theme-hint-color, #8e8e93);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .card {
+      background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+      border-radius: 16px;
+      padding: 20px 14px 18px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      border: none;
+      width: 100%;
+      color: var(--tg-theme-text-color, #000);
+      transition: opacity 0.15s, transform 0.1s;
+      min-height: 105px;
+      text-align: center;
+    }
+    .card:active {
+      opacity: 0.65;
+      transform: scale(0.97);
+    }
+    .card-emoji { font-size: 30px; margin-bottom: 8px; }
+    .card-label { font-size: 14px; font-weight: 600; }
+    .card-desc { font-size: 11px; color: var(--tg-theme-hint-color, #8e8e93); margin-top: 3px; }
+    .card-wide {
+      grid-column: 1 / -1;
+      flex-direction: row;
+      gap: 12px;
+      min-height: 64px;
+      padding: 16px 20px;
+    }
+    .card-wide .card-emoji { font-size: 24px; margin-bottom: 0; }
+    .card-wide .card-info { text-align: left; }
+    .card-wide .card-label { font-size: 15px; }
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+      border-radius: 12px;
+      margin-top: 6px;
+      font-size: 13px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #34c759;
+      display: inline-block;
+      margin-right: 6px;
+    }
+    .status-greeting {
+      color: var(--tg-theme-hint-color, #8e8e93);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-title">🤖 Aria</div>
+    <div class="header-sub" id="greeting">Your proactive Bengaluru guide</div>
+  </div>
+
+  <div class="grid">
+    <button class="card" onclick="openLocations()">
+      <div class="card-emoji">📍</div>
+      <div class="card-label">Locations</div>
+      <div class="card-desc">Saved spots</div>
+    </button>
+
+    <button class="card" onclick="openFriends()">
+      <div class="card-emoji">👥</div>
+      <div class="card-label">Friends</div>
+      <div class="card-desc">Your squad</div>
+    </button>
+
+    <button class="card" onclick="openSettings()">
+      <div class="card-emoji">⚙️</div>
+      <div class="card-label">Preferences</div>
+      <div class="card-desc">What you like</div>
+    </button>
+
+    <button class="card" onclick="openTrip()">
+      <div class="card-emoji">🗺️</div>
+      <div class="card-label">Plan Trip</div>
+      <div class="card-desc">Go somewhere</div>
+    </button>
+  </div>
+
+  <div class="grid">
+    <button class="card card-wide" onclick="openHelp()">
+      <div class="card-emoji">❓</div>
+      <div class="card-info">
+        <div class="card-label">Help</div>
+        <div class="card-desc">What can Aria do?</div>
+      </div>
+    </button>
+  </div>
+
+  <div class="status-bar">
+    <span><span class="status-dot"></span>Aria is active</span>
+    <span class="status-greeting" id="userGreeting"></span>
+  </div>
+
+  <script>
+    const tg = window.Telegram.WebApp
+    tg.ready()
+    tg.expand()
+
+    // Greet user
+    const user = tg.initDataUnsafe?.user
+    if (user?.first_name) {
+      document.getElementById('userGreeting').textContent = `Hey, ${user.first_name}!`
+      document.getElementById('greeting').textContent = `Hey ${user.first_name}, your proactive guide`
+    }
+
+    function sendCmd(cmd) {
+      tg.sendData(JSON.stringify({ type: 'menu_action', action: cmd }))
+    }
+
+    function openLocations() { sendCmd('/locations') }
+    function openFriends()   { sendCmd('/friends') }
+    function openSettings()  { sendCmd('/settings') }
+    function openTrip()      { sendCmd('/trip') }
+    function openHelp()      { sendCmd('/help') }
+  </script>
+</body>
+</html>

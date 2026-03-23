@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Friends</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--tg-theme-bg-color, #ffffff);
+      color: var(--tg-theme-text-color, #000000);
+      padding: 16px;
+      min-height: 100vh;
+    }
+    h2 { font-size: 17px; font-weight: 600; margin-bottom: 14px; }
+    .tabs { display: flex; gap: 6px; margin-bottom: 18px; }
+    .tab {
+      flex: 1;
+      padding: 10px 6px;
+      border-radius: 10px;
+      text-align: center;
+      cursor: pointer;
+      background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+      font-size: 13px;
+      font-weight: 500;
+      transition: opacity 0.15s;
+      border: none;
+      color: var(--tg-theme-text-color, #000);
+    }
+    .tab:active { opacity: 0.7; }
+    .tab.active {
+      background: var(--tg-theme-button-color, #007aff);
+      color: var(--tg-theme-button-text-color, #fff);
+    }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    input[type="text"] {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1.5px solid var(--tg-theme-hint-color, #c7c7cc);
+      background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+      color: var(--tg-theme-text-color, #000);
+      font-size: 16px;
+      outline: none;
+      margin-bottom: 10px;
+    }
+    .friend-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+      margin-bottom: 8px;
+    }
+    .friend-name { font-weight: 600; font-size: 15px; }
+    .friend-handle { font-size: 12px; color: var(--tg-theme-hint-color, #8e8e93); margin-top: 2px; }
+    .add-btn {
+      padding: 7px 14px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      background: var(--tg-theme-button-color, #007aff);
+      color: var(--tg-theme-button-text-color, #fff);
+      font-size: 13px;
+      font-weight: 600;
+      flex-shrink: 0;
+      transition: opacity 0.15s;
+    }
+    .add-btn:active { opacity: 0.7; }
+    .add-btn.added {
+      background: var(--tg-theme-hint-color, #8e8e93);
+    }
+    .confirm-btn {
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      background: var(--tg-theme-button-color, #007aff);
+      color: var(--tg-theme-button-text-color, #fff);
+      border: none;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: opacity 0.15s;
+    }
+    .confirm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .confirm-btn:not(:disabled):active { opacity: 0.8; }
+    .invite-box {
+      padding: 14px;
+      border-radius: 12px;
+      background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+      margin-bottom: 14px;
+      font-size: 14px;
+      line-height: 1.5;
+      word-break: break-all;
+      min-height: 50px;
+    }
+    .action-btn {
+      width: 100%;
+      padding: 13px;
+      border-radius: 10px;
+      border: 1.5px solid var(--tg-theme-hint-color, #c7c7cc);
+      background: transparent;
+      color: var(--tg-theme-text-color, #000);
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-bottom: 8px;
+      transition: opacity 0.15s;
+    }
+    .action-btn:active { opacity: 0.65; }
+    .hint {
+      font-size: 12px;
+      color: var(--tg-theme-hint-color, #8e8e93);
+      line-height: 1.5;
+      margin-top: 6px;
+    }
+    .empty-msg {
+      text-align: center;
+      padding: 24px;
+      color: var(--tg-theme-hint-color, #8e8e93);
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <h2>👥 Friends</h2>
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('search')">Search</button>
+    <button class="tab" onclick="showTab('invite')">Invite</button>
+    <button class="tab" onclick="showTab('contacts')">Contacts</button>
+  </div>
+
+  <!-- Search -->
+  <div id="searchPanel" class="panel active">
+    <input type="text" id="searchInput" placeholder="Search by name" autocomplete="off">
+    <div id="searchResults"><div class="empty-msg">Type to search Aria users</div></div>
+    <button class="confirm-btn" id="addSelectedBtn" disabled onclick="submitSelected()">Add Selected Friends</button>
+  </div>
+
+  <!-- Invite -->
+  <div id="invitePanel" class="panel">
+    <div class="invite-box" id="inviteBox">Generating your invite link...</div>
+    <button class="action-btn" id="copyBtn" onclick="copyInvite()">📋 Copy Link</button>
+    <button class="action-btn" onclick="shareInvite()">📤 Share with Friends</button>
+    <p class="hint">Your friend taps the link → joins Aria → you're automatically connected!</p>
+  </div>
+
+  <!-- Contacts -->
+  <div id="contactsPanel" class="panel">
+    <p style="line-height:1.6;margin-bottom:16px">To add friends from your Telegram contacts, tap the button below. Aria will send you a native contact picker.</p>
+    <button class="confirm-btn" onclick="requestContactsPicker()">📱 Pick from Contacts</button>
+    <p class="hint" style="margin-top:10px">Your contacts are never sent to our servers — Telegram handles the selection natively.</p>
+  </div>
+
+  <script>
+    const tg = window.Telegram.WebApp
+    tg.ready()
+    tg.expand()
+
+    const BASE_URL = window.location.origin
+    const userId = tg.initDataUnsafe?.user?.id
+    let selectedFriends = []
+    let inviteUrl = null
+
+    // ── Tabs ──────────────────────────────────────────────────────────────────
+    function showTab(name) {
+      document.querySelectorAll('.tab').forEach((t, i) =>
+        t.classList.toggle('active', ['search', 'invite', 'contacts'][i] === name)
+      )
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'))
+      document.getElementById(name + 'Panel').classList.add('active')
+      if (name === 'invite' && !inviteUrl) loadInvite()
+    }
+
+    // ── Search ────────────────────────────────────────────────────────────────
+    let searchTimer
+    document.getElementById('searchInput').addEventListener('input', function () {
+      clearTimeout(searchTimer)
+      const q = this.value.trim()
+      if (q.length < 2) {
+        document.getElementById('searchResults').innerHTML = '<div class="empty-msg">Type to search Aria users</div>'
+        return
+      }
+      searchTimer = setTimeout(() => doSearch(q), 350)
+    })
+
+    async function doSearch(q) {
+      try {
+        const res = await fetch(
+          `${BASE_URL}/api/user/${userId}/search-friends?q=${encodeURIComponent(q)}`,
+          { headers: { 'X-Telegram-Init-Data': tg.initData || '' } }
+        )
+        const results = await res.json()
+        const container = document.getElementById('searchResults')
+        if (!results.length) {
+          container.innerHTML = '<div class="empty-msg">No users found</div>'
+          return
+        }
+        container.innerHTML = results.map(u => `
+          <div class="friend-item">
+            <div>
+              <div class="friend-name">${escHtml(u.name)}</div>
+              <div class="friend-handle">@${escHtml(u.username || 'user')}</div>
+            </div>
+            <button class="add-btn" id="btn_${u.id}" onclick="toggleFriend('${u.id}')">Add</button>
+          </div>`).join('')
+      } catch {
+        document.getElementById('searchResults').innerHTML = '<div class="empty-msg">Search failed — try again</div>'
+      }
+    }
+
+    function toggleFriend(id) {
+      const btn = document.getElementById('btn_' + id)
+      if (!btn) return
+      const idx = selectedFriends.indexOf(id)
+      if (idx === -1) {
+        selectedFriends.push(id)
+        btn.textContent = '✓ Added'
+        btn.classList.add('added')
+      } else {
+        selectedFriends.splice(idx, 1)
+        btn.textContent = 'Add'
+        btn.classList.remove('added')
+      }
+      const addBtn = document.getElementById('addSelectedBtn')
+      addBtn.disabled = selectedFriends.length === 0
+    }
+
+    function submitSelected() {
+      if (!selectedFriends.length) return
+      tg.sendData(JSON.stringify({ type: 'friend_select', action: 'add', friends: selectedFriends }))
+    }
+
+    // ── Invite ────────────────────────────────────────────────────────────────
+    async function loadInvite() {
+      const box = document.getElementById('inviteBox')
+      try {
+        const res = await fetch(`${BASE_URL}/api/invite/generate`, {
+          method: 'POST',
+          headers: { 'X-Telegram-Init-Data': tg.initData || '' }
+        })
+        const data = await res.json()
+        inviteUrl = data.invite_url
+        box.textContent = inviteUrl
+      } catch {
+        box.textContent = 'Could not generate link — try again.'
+      }
+    }
+
+    function copyInvite() {
+      if (!inviteUrl) return
+      navigator.clipboard.writeText(inviteUrl).then(() => {
+        const btn = document.getElementById('copyBtn')
+        const orig = btn.textContent
+        btn.textContent = '✓ Copied!'
+        setTimeout(() => { btn.textContent = orig }, 2000)
+      }).catch(() => {})
+    }
+
+    function shareInvite() {
+      if (!inviteUrl) return
+      tg.openTelegramLink(
+        `https://t.me/share/url?url=${encodeURIComponent(inviteUrl)}&text=${encodeURIComponent('Join me on Aria!')}`
+      )
+    }
+
+    // ── Contacts ──────────────────────────────────────────────────────────────
+    function requestContactsPicker() {
+      // Close Mini App and signal bot to send KeyboardButtonRequestUsers keyboard
+      tg.sendData(JSON.stringify({ type: 'menu_action', action: 'request_contacts' }))
+    }
+
+    function escHtml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    }
+  </script>
+</body>
+</html>

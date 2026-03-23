@@ -8,6 +8,16 @@
 
 import { handleMessage } from './handler.js'
 import { handleFunnelCallback } from '../proactive-intent/index.js'
+
+async function editTgMessageKeyboard(chatId: string, messageId: number, keyboard: object): Promise<void> {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return
+  await fetch(`https://api.telegram.org/bot${token}/editMessageReplyMarkup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, message_id: messageId, reply_markup: keyboard }),
+  }).catch(() => {})
+}
 import { handleTaskCallback } from '../task-orchestrator/index.js'
 import { acceptFriend } from '../social/friend-graph.js'
 import { acceptSquadInvite } from '../social/squad.js'
@@ -45,8 +55,37 @@ const CALLBACK_INTENTS: Record<string, string> = {
 export async function handleCallbackAction(
   channel: string,
   userId: string,
-  callbackData: string
+  callbackData: string,
+  context?: { chatId?: string; messageId?: number }
 ): Promise<{ text: string; choices?: { label: string; action: string }[] } | null> {
+  // Proactive dismiss — remove buttons and mark delivered state dismissed
+  if (callbackData === 'dismiss_proactive') {
+    const chatId = context?.chatId
+    const messageId = context?.messageId
+    if (chatId && messageId) {
+      // Remove the inline keyboard from the message
+      await editTgMessageKeyboard(chatId, messageId, { inline_keyboard: [] })
+    }
+    // Mark proactive_state as dismissed in DB (fire-and-forget)
+    setImmediate(async () => {
+      try {
+        const { getPool } = await import('./session-store.js')
+        const pool = getPool()
+        const { rows } = await pool.query<{ user_id: string }>(
+          `SELECT user_id FROM users WHERE channel = $1 AND channel_user_id = $2 LIMIT 1`,
+          [channel, userId]
+        )
+        if (rows.length) {
+          await pool.query(
+            `UPDATE proactive_state SET status = 'dismissed' WHERE user_id = $1 AND status = 'delivered'`,
+            [rows[0].user_id]
+          )
+        }
+      } catch { /* non-critical */ }
+    })
+    return null
+  }
+
   // Social callbacks — friend and squad invites
   if (callbackData.startsWith('friend:accept:')) {
     const friendId = callbackData.replace('friend:accept:', '')

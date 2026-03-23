@@ -5,6 +5,9 @@
 
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
+import fastifyStatic from '@fastify/static'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { handleMessage, initDatabase, registerBrainHooks, saveUserLocation } from './character/index.js'
 import { getOrCreateUser } from './character/session-store.js'
 import { brainHooks } from './brain/index.js'
@@ -15,6 +18,8 @@ import { initBrowser, closeBrowser } from './browser.js'
 import './tools/index.js'  // Register body hooks (DEV 2 tools)
 import { verifySlackSignature } from './slack-verify.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 import {
   channels,
   getEnabledChannels,
@@ -34,6 +39,13 @@ declare module 'fastify' {
 const server = Fastify({ logger: true })
 
 await server.register(cors)
+
+// Serve Mini App static files from webapp/ directory
+await server.register(fastifyStatic, {
+  root: path.join(__dirname, '..', 'webapp'),
+  prefix: '/webapp/',
+  decorateReply: false,
+})
 
 // Health check with enabled channels
 server.get('/health', async () => ({
@@ -242,7 +254,8 @@ server.post('/webhook/telegram', async (request, reply) => {
 
     if (chatId && userId && data) {
       const { handleCallbackAction } = await import('./character/callback-handler.js')
-      const response = await handleCallbackAction('telegram', userId, data)
+      const messageId = query.message?.message_id as number | undefined
+      const response = await handleCallbackAction('telegram', userId, data, { chatId, messageId })
       if (response?.text) {
         if (response.choices?.length) {
           // Send with inline keyboard so the next step's buttons are interactive
@@ -280,6 +293,29 @@ server.post('/webhook/telegram', async (request, reply) => {
   }
 
   const message = body?.message
+
+  // ── Mini App data submission ────────────────────────────────────────────────
+  if (message?.web_app_data?.data) {
+    const userId = message.from?.id?.toString()
+    const chatId = message.chat?.id?.toString()
+    if (userId && chatId) {
+      const { handleWebAppData } = await import('./telegram/webapp-router.js')
+      await handleWebAppData(chatId, userId, message.web_app_data.data, server.log as unknown as import('pino').Logger)
+    }
+    return { ok: true }
+  }
+
+  // ── Native contact picker result (KeyboardButtonRequestUsers) ───────────────
+  if (message?.users_shared) {
+    const userId = message.from?.id?.toString()
+    const chatId = message.chat?.id?.toString()
+    if (userId && chatId) {
+      const sharedUserIds = ((message.users_shared as any).users ?? []).map((u: any) => String(u.user_id))
+      const { handleUsersShared } = await import('./telegram/handlers/friend-handler.js')
+      await handleUsersShared(chatId, userId, sharedUserIds, server.log as unknown as import('pino').Logger)
+    }
+    return { ok: true }
+  }
 
   // ── GPS location share ─────────────────────────────────────────────────────
   if (message?.location) {
@@ -333,6 +369,50 @@ server.post('/webhook/telegram', async (request, reply) => {
   const msgText = parsedMessage.text
 
   try {
+    // ── /start invite_CODE deep link ──────────────────────────────────────────
+    if (/^\/start invite_\S+/i.test(msgText)) {
+      const code = msgText.replace(/^\/start invite_/i, '').trim()
+      const internalUser = await getOrCreateUser(parsedMessage.channel, parsedMessage.userId)
+      const { resolveInviteCode } = await import('./social/friend-graph.js')
+      const result = await resolveInviteCode(code, internalUser.userId)
+      if (result.success) {
+        await channels.telegram.sendMessage(chatId, "You're now connected! 🤝 Aria can now suggest group activities with your friend.")
+      } else {
+        await channels.telegram.sendMessage(chatId, "That invite link has already been used or expired. Ask your friend for a fresh one!")
+      }
+      return { ok: true }
+    }
+
+    // ── Bot command routing (/settings, /friends, /locations, /trip, /help) ──
+    if (msgText.startsWith('/') && !/^\/start(?:@\w+)?(?:\s|$)/i.test(msgText)) {
+      const internalUser = await getOrCreateUser(parsedMessage.channel, parsedMessage.userId)
+      const { handleCommand } = await import('./telegram/command-handlers.js')
+      const cmdResponse = await handleCommand(msgText, internalUser.userId, parsedMessage.userId)
+      if (cmdResponse) {
+        if (cmdResponse.webAppButton) {
+          await tgFetch('sendMessage', {
+            chat_id: chatId,
+            text: cmdResponse.text,
+            parse_mode: 'HTML',
+            reply_markup: {
+              keyboard: [[{
+                text: cmdResponse.webAppButton.buttonText,
+                web_app: { url: cmdResponse.webAppButton.url },
+              }]],
+              resize_keyboard: true,
+              one_time_keyboard: true,
+            },
+          })
+        } else if (cmdResponse.keyboard) {
+          await sendTelegramWithKeyboard(chatId, cmdResponse.text, cmdResponse.keyboard)
+        } else {
+          await channels.telegram.sendMessage(chatId, cmdResponse.text)
+        }
+        return { ok: true }
+      }
+      // Unknown command — fall through to handleMessage (handles /start onboarding)
+    }
+
     // Fire typing indicator immediately — before anything else runs
     sendChatAction(chatId, typingActionFor(msgText))
 
@@ -488,6 +568,59 @@ server.post('/webhook/slack', async (request, reply) => {
 })
 
 // ============================================
+// Mini App API endpoints
+// ============================================
+
+// GET /api/user/:telegramUserId/locations — saved locations for Location Mini App
+server.get('/api/user/:telegramUserId/locations', async (request, reply) => {
+  const initDataHeader = request.headers['x-telegram-init-data'] as string | undefined
+  if (!initDataHeader) return reply.code(401).send({ error: 'Missing X-Telegram-Init-Data header' })
+  const { validateInitData } = await import('./telegram/webapp-validation.js')
+  const validation = validateInitData(initDataHeader, TOKEN())
+  if (!validation.valid) return reply.code(401).send({ error: 'Invalid initData' })
+  const { telegramUserId } = request.params as { telegramUserId: string }
+  const user = await getOrCreateUser('telegram', telegramUserId)
+  const { getSavedLocations } = await import('./location.js')
+  return getSavedLocations(user.userId)
+})
+
+// GET /api/user/:telegramUserId/search-friends — friend search for Friend Mini App
+server.get('/api/user/:telegramUserId/search-friends', async (request, reply) => {
+  const initDataHeader = request.headers['x-telegram-init-data'] as string | undefined
+  if (!initDataHeader) return reply.code(401).send({ error: 'Missing X-Telegram-Init-Data header' })
+  const { validateInitData } = await import('./telegram/webapp-validation.js')
+  const validation = validateInitData(initDataHeader, TOKEN())
+  if (!validation.valid) return reply.code(401).send({ error: 'Invalid initData' })
+  const { q } = request.query as { q?: string }
+  if (!q || q.trim().length < 2) return []
+  const pool = (await import('./character/session-store.js')).getPool()
+  const { rows } = await pool.query<{ user_id: string; display_name: string; channel_user_id: string }>(
+    `SELECT user_id, display_name, channel_user_id
+     FROM users
+     WHERE authenticated = TRUE AND display_name ILIKE $1
+     ORDER BY display_name LIMIT 10`,
+    [`%${q.trim()}%`]
+  )
+  return rows.map(r => ({ id: r.user_id, name: r.display_name ?? r.channel_user_id, username: r.channel_user_id }))
+})
+
+// POST /api/invite/generate — generate single-use invite code
+server.post('/api/invite/generate', async (request, reply) => {
+  const initDataHeader = request.headers['x-telegram-init-data'] as string | undefined
+  if (!initDataHeader) return reply.code(401).send({ error: 'Missing X-Telegram-Init-Data header' })
+  const { validateInitData } = await import('./telegram/webapp-validation.js')
+  const validation = validateInitData(initDataHeader, TOKEN())
+  if (!validation.valid) return reply.code(401).send({ error: 'Invalid initData' })
+  const tgUserId = String(validation.data?.user?.id ?? '')
+  if (!tgUserId) return reply.code(400).send({ error: 'No user in initData' })
+  const user = await getOrCreateUser('telegram', tgUserId)
+  const { generateInviteCode } = await import('./social/friend-graph.js')
+  const code = await generateInviteCode(user.userId)
+  const inviteBase = process.env.INVITE_BASE_URL || 'https://t.me/AriaBot'
+  return { invite_url: `${inviteBase}?start=invite_${code}` }
+})
+
+// ============================================
 // Send message helper (used by scheduler)
 // ============================================
 
@@ -527,6 +660,14 @@ const start = async () => {
 
     const enabledChannels = getEnabledChannels().map(ch => ch.name).join(', ') || 'none'
     server.log.info(`Aria ready on port ${port} | Channels: ${enabledChannels}`)
+
+    // Register bot commands and menu button (fire-and-forget — never blocks startup)
+    const webappBaseUrl = process.env.WEBAPP_BASE_URL
+    if (webappBaseUrl && TOKEN()) {
+      const { registerBotCommands, setupMenuButton } = await import('./telegram/bot-setup.js')
+      registerBotCommands(tgFetch).catch(() => {})
+      setupMenuButton(tgFetch, webappBaseUrl).catch(() => {})
+    }
   } catch (err) {
     server.log.error(err)
     process.exit(1)
