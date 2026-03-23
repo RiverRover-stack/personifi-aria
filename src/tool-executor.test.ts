@@ -143,16 +143,25 @@ describe('executeAlphaTool — unknown tool name', () => {
 })
 
 describe('executeAlphaTool — error handling', () => {
+    beforeEach(() => {
+        // vi.clearAllMocks() does not reset mock implementations — only calls/results.
+        // vi.resetAllMocks() is required here to clear the default mockResolvedValue
+        // set by event_lookup's beforeEach, which would otherwise make retry attempts succeed.
+        vi.resetAllMocks()
+        vi.mocked(checkRateLimit).mockResolvedValue(true)
+    })
+
     it('catches unexpected throws from bodyHooks and returns failure', async () => {
         mockExecuteTool.mockRejectedValueOnce(new Error('API timeout'))
-        const result = await executeAlphaTool('weather_check', { location: 'Delhi' })
+        // maxRetries: 0 — single attempt, avoids 500 ms sleep and a spurious retry
+        const result = await executeAlphaTool('weather_check', { location: 'Delhi' }, 'user-1', { maxRetries: 0 })
         expect(result.success).toBe(false)
         expect(result.error).toContain('weather_check')
     })
 
     it('returns bodyHooks failure result as-is', async () => {
         mockExecuteTool.mockResolvedValueOnce(failResult('Rate limit exceeded'))
-        const result = await executeAlphaTool('place_search', { query: 'gym' })
+        const result = await executeAlphaTool('place_search', { query: 'gym' }, 'user-1')
         expect(result.success).toBe(false)
         expect(result.error).toBe('Rate limit exceeded')
     })

@@ -81,7 +81,8 @@ export class FireworksProvider implements LLMProviderWithTools {
             tool_choice: params.toolChoice ?? 'auto',
             max_tokens: params.maxTokens ?? DEFAULT_MAX_TOKENS,
             temperature: params.temperature ?? DEFAULT_TEMPERATURE,
-            parallel_tool_calls: params.parallelToolCalls ?? true,
+            // parallel_tool_calls is NOT forwarded — Fireworks Llama models silently
+            // drop tool_calls and return plain text when this field is present.
         }
 
         const data = await fireworksFetch('/chat/completions', body)

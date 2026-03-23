@@ -107,8 +107,8 @@ export async function executeThroughSandbox(
     }
 
     if (result === undefined) {
-        const msg = lastError instanceof Error ? lastError.message : 'Tool execution failed'
-        result = { success: false, data: null, error: msg }
+        const cause = lastError instanceof Error ? lastError.message : 'Tool execution failed'
+        result = { success: false, data: null, error: `${alphaName}: ${cause}` }
     }
 
     // ── 4. Output compression ─────────────────────────────────────────────────

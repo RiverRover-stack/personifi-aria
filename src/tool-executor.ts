@@ -55,7 +55,7 @@ const ALPHA_TO_LEGACY: Record<string, string> = {
 export async function executeAlphaTool(
     name: string,
     rawArgs: unknown,
-    userId: string,
+    userId = '',
     config?: SandboxConfig,
 ): Promise<ToolExecutionResult> {
     if (!ALPHA_TOOL_NAMES.has(name)) {

@@ -217,6 +217,9 @@ function printReport(all: ProviderReport[]): void {
             console.log(
                 `  ${r.case.padEnd(45)} avg=${r.avgLatencyMs}ms  p95=${r.p95LatencyMs}ms${toolAccuracy}${r.errorRate > 0 ? `  errors=${(r.errorRate * 100).toFixed(0)}%` : ''}`
             )
+            // Surface the first error message so failures are diagnosable
+            const firstErr = r.rounds.find(rd => rd.error)?.error
+            if (firstErr) console.log(`    ↳ ${firstErr}`)
             totalAccuracy += r.accuracy
             totalAvgLatency += r.avgLatencyMs
             totalErrors += r.errorRate
