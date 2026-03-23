@@ -253,7 +253,9 @@ describe('fusionProactiveDecision', () => {
     }
 
     it('returns FIRE for high-scoring PROACTIVE user', () => {
-        const decision = fusionProactiveDecision(stimulus, baseCtx)
+        // Pin to 14:00 UTC (19:30 IST) — well within the 8am-10pm active window
+        const midday = new Date('2026-01-01T14:00:00Z')
+        const decision = fusionProactiveDecision(stimulus, baseCtx, midday)
         // score = 0.9 * 1.0 * 1.0 * 1.0 = 0.9 >= threshold 0.7
         expect(decision.action).toBe('FIRE')
         expect(decision.score).toBeCloseTo(0.9)

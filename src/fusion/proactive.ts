@@ -26,6 +26,7 @@ import { evaluatePushback, checkRecovery, PUSHBACK_PULSE_DELTA } from './pushbac
 export function fusionProactiveDecision(
     stimulus: StimulusInput,
     userCtx: UserContext,
+    now: Date = new Date(),
 ): ProactiveDecision {
     const score = computeFusionScore(stimulus, userCtx)
     const mode = getFusionMode(userCtx.pulseState)
@@ -96,7 +97,6 @@ export function fusionProactiveDecision(
     }
 
     // Time window check: only fire proactive messages 8am-10pm IST
-    const now = new Date()
     const istHour = (now.getUTCHours() + 5) % 24 + (now.getUTCMinutes() + 30) / 60
     if (istHour < 8 || istHour >= 22) {
         if (score >= mode.threshold) {
