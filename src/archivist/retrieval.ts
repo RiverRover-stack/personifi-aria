@@ -21,6 +21,9 @@
 import { embed } from '../embeddings.js'
 import { getPool } from '../character/session-store.js'
 import type { MemoryItem } from '../memory-store.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'retrieval' })
 
 // ─── Scoring Weights ──────────────────────────────────────────────────────────
 
@@ -134,7 +137,7 @@ export async function scoredMemorySearch(
     // Step 1 — Embed the query
     const queryEmbedding = await embed(query, 'retrieval.query')
     if (!queryEmbedding) {
-        console.warn('[archivist/retrieval] Embedding failed, skipping composite search')
+        log.warn('Embedding failed, skipping composite search')
         return []
     }
 

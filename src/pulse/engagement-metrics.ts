@@ -22,6 +22,9 @@ import type {
     WeightedMetric,
 } from './engagement-types.js'
 import type { EngagementState } from './types.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'engagement-metrics' })
 
 // ─── Weight Helpers ──────────────────────────────────────────────────────────
 
@@ -72,7 +75,7 @@ async function loadFromPostgres(userId: string): Promise<EngagementMetricsRecord
             createdAt: row.created_at?.toISOString() ?? new Date().toISOString(),
         }
     } catch (err) {
-        console.error('[EngagementMetrics] PostgreSQL load failed:', err)
+        log.error({ err }, 'PostgreSQL load failed')
         return null
     }
 }
@@ -98,7 +101,7 @@ async function saveToPostgres(record: EngagementMetricsRecord): Promise<void> {
             ],
         )
     } catch (err) {
-        console.error('[EngagementMetrics] PostgreSQL save failed:', err)
+        log.error({ err }, 'PostgreSQL save failed')
     }
 }
 
@@ -143,12 +146,10 @@ export async function initializeMetrics(
     await saveToPostgres(record)
     // DynamoDB is fire-and-forget — don't await in critical path
     putMetricsToDynamo(record).catch(err =>
-        console.error('[EngagementMetrics] DynamoDB init write failed:', err),
+        log.error({ err }, 'DynamoDB init write failed'),
     )
 
-    console.log(
-        `[EngagementMetrics] Initialized for user=${userId} categories=${Object.keys(metrics).join(',')}`,
-    )
+    log.info({ userId, categories: Object.keys(metrics) }, 'Metrics initialized')
 
     return record
 }
@@ -198,7 +199,7 @@ export async function updateMetric(input: MetricUpdateInput): Promise<WeightedMe
 
     // DynamoDB — fire-and-forget single-field update
     updateSingleMetricInDynamo(userId, category, updated, input.isFriendInteraction ?? false).catch(err =>
-        console.error(`[EngagementMetrics] DynamoDB update failed for ${category}:`, err),
+        log.error({ category, err }, 'DynamoDB update failed'),
     )
 
     // CloudWatch metric — fire-and-forget
@@ -262,7 +263,7 @@ export async function syncEngagementState(
         // Bootstrap a minimal record so the state sync is never a no-op.
         // Preference weights will be populated next time initializeMetrics or
         // updateMetric runs; this ensures at least the state/score are persisted.
-        console.log(`[EngagementMetrics] No record found for user=${userId} during syncEngagementState — bootstrapping`)
+        log.info({ userId }, 'No metrics record found during syncEngagementState — bootstrapping')
         record = {
             userId,
             metrics: {},
@@ -281,7 +282,7 @@ export async function syncEngagementState(
 
     await saveToPostgres(record)
     putMetricsToDynamo(record).catch(err =>
-        console.error('[EngagementMetrics] DynamoDB state sync failed:', err),
+        log.error({ err }, 'DynamoDB state sync failed'),
     )
 }
 

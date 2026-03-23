@@ -7,6 +7,9 @@ import type { ToolExecutionResult } from '../hooks.js'
 import { scrapeSwiggy, type SwiggyResult } from './scrapers/swiggy.js'
 import { scrapeZomato, type ZomatoResult } from './scrapers/zomato.js'
 import { cacheGet, cacheSet, cacheKey } from './scrapers/cache.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'food-compare' })
 
 interface FoodCompareParams {
     query: string
@@ -26,11 +29,11 @@ export async function compareFoodPrices(params: FoodCompareParams): Promise<Tool
     const key = cacheKey('compare_food_prices', params as unknown as Record<string, unknown>)
     const cached = cacheGet<{ formatted: string; raw: FoodResult[] }>(key)
     if (cached) {
-        console.log('[FoodCompare] Cache hit')
+        log.info('Cache hit')
         return { success: true, data: cached }
     }
 
-    console.log(`[FoodCompare] Searching "${query}" in ${location} on Swiggy + Zomato`)
+    log.info({ query, location }, 'Searching food on Swiggy + Zomato')
 
     // Scrape both platforms in parallel — partial success is fine
     const [swiggyResult, zomatoResult] = await Promise.allSettled([
@@ -42,10 +45,10 @@ export async function compareFoodPrices(params: FoodCompareParams): Promise<Tool
     const zomatoData: ZomatoResult[] = zomatoResult.status === 'fulfilled' ? zomatoResult.value : []
 
     if (swiggyResult.status === 'rejected') {
-        console.error('[FoodCompare] Swiggy failed:', swiggyResult.reason)
+        log.error({ err: swiggyResult.reason }, 'Swiggy failed')
     }
     if (zomatoResult.status === 'rejected') {
-        console.error('[FoodCompare] Zomato failed:', zomatoResult.reason)
+        log.error({ err: zomatoResult.reason }, 'Zomato failed')
     }
 
     if (swiggyData.length === 0 && zomatoData.length === 0) {

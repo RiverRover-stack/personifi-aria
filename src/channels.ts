@@ -3,6 +3,10 @@
  * Supports: Telegram, WhatsApp, Slack (Discord coming soon)
  */
 
+import { logger } from './logger.js'
+
+const log = logger.child({ module: 'channels' })
+
 export interface ChannelMessage {
   channel: 'telegram' | 'whatsapp' | 'slack' | 'discord'
   userId: string      // Platform-specific user ID
@@ -102,7 +106,7 @@ export const telegramAdapter: ChannelAdapter = {
   sendMessage: async (chatId: string, text: string) => {
     const token = process.env.TELEGRAM_BOT_TOKEN
     if (!token) {
-      console.error('[Telegram] sendMessage failed: missing bot token')
+      log.error('sendMessage failed: missing bot token')
       return
     }
 
@@ -127,12 +131,12 @@ export const telegramAdapter: ChannelAdapter = {
         })
         const retryBody = await retryResp.json().catch(() => ({}))
         if (!retryResp.ok || retryBody?.ok === false) {
-          console.error('[Telegram] sendMessage retry failed:', (retryBody as any)?.description || retryResp.statusText)
+          log.error({ description: (retryBody as any)?.description || retryResp.statusText }, 'sendMessage retry failed')
         }
         return
       }
 
-      console.error('[Telegram] sendMessage failed:', description || resp.statusText)
+      log.error({ description: description || resp.statusText }, 'sendMessage failed')
     }
   },
 
@@ -149,7 +153,7 @@ export const telegramAdapter: ChannelAdapter = {
       if (downloaded) {
         const result = await uploadVideoToTelegram(chatId, downloaded, media[0].caption || '', { supportsStreaming: true })
         if (result.success) return
-        console.warn('[Telegram] sendMedia: multipart video upload failed, trying URL-based fallback')
+        log.warn('sendMedia: multipart video upload failed, trying URL-based fallback')
       }
 
       // For Places URLs, NEVER do URL-based fallback (produces map thumbnails)
@@ -174,7 +178,7 @@ export const telegramAdapter: ChannelAdapter = {
       })
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}))
-        console.error('[Telegram] sendVideo failed:', (err as any)?.description, 'url:', media[0].url)
+        log.error({ description: (err as any)?.description, url: media[0].url }, 'sendVideo failed')
         // Final fallback: send as URL in text message
         if (media[0].caption) {
           await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -194,7 +198,7 @@ export const telegramAdapter: ChannelAdapter = {
       if (downloaded) {
         const result = await uploadPhotoToTelegram(chatId, downloaded, media[0].caption || '')
         if (result.success) return
-        console.warn('[Telegram] sendMedia: multipart photo upload failed, trying URL-based fallback')
+        log.warn('sendMedia: multipart photo upload failed, trying URL-based fallback')
       }
 
       // For Places URLs, NEVER do URL-based fallback (produces map thumbnails)
@@ -218,7 +222,7 @@ export const telegramAdapter: ChannelAdapter = {
       })
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}))
-        console.error('[Telegram] sendPhoto failed:', (err as any)?.description, 'url:', media[0].url)
+        log.error({ description: (err as any)?.description, url: media[0].url }, 'sendPhoto failed')
       }
     } else {
       // Multiple photos — try downloading each and uploading individually
@@ -272,7 +276,7 @@ export const telegramAdapter: ChannelAdapter = {
           })
           if (!resp.ok) {
             const err = await resp.json().catch(() => ({}))
-            console.error('[Telegram] sendMediaGroup failed:', (err as any)?.description)
+            log.error({ description: (err as any)?.description }, 'sendMediaGroup failed')
           }
         }
       }
@@ -293,7 +297,7 @@ export async function sendProactiveContent(
 ): Promise<boolean> {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) {
-    console.error('[Telegram] Cannot send proactive: no bot token')
+    log.error('Cannot send proactive: no bot token')
     return false
   }
 
@@ -311,18 +315,18 @@ export async function sendProactiveContent(
           : await uploadPhotoToTelegram(chatId, downloaded, caption)
 
         if (result.success) return true
-        console.warn('[Telegram] Multipart upload failed, trying URL-based fallback')
+        log.warn('Multipart upload failed, trying URL-based fallback')
       }
 
       // For Places URLs, NEVER do URL-based fallback (produces map thumbnails)
       if (isLikelyPlacesPhotoUrl(media.url)) {
-        console.warn('[Telegram] Skipping URL-based fallback for Places photo (would produce map thumbnail)')
+        log.warn('Skipping URL-based fallback for Places photo (would produce map thumbnail)')
         await telegramAdapter.sendMessage(chatId, caption)
         return true
       }
 
       // Fallback: try URL-based send (may fail for expired CDN URLs)
-      console.warn('[Telegram] Multipart upload failed, trying URL-based fallback')
+      log.warn('Multipart upload failed, trying URL-based fallback')
       const method = media.type === 'video' ? 'sendVideo' : 'sendPhoto'
       const field = media.type === 'video' ? 'video' : 'photo'
 
@@ -341,7 +345,7 @@ export async function sendProactiveContent(
       if (resp.ok) return true
 
       // Final fallback: send URL as text link
-      console.warn('[Telegram] URL-based send failed, sending as text')
+      log.warn('URL-based send failed, sending as text')
       await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -367,7 +371,7 @@ export async function sendProactiveContent(
       return data.ok === true
     }
   } catch (err) {
-    console.error('[Telegram] Proactive send failed:', err)
+    log.error({ err }, 'Proactive send failed')
     return false
   }
 }
@@ -450,11 +454,11 @@ export const whatsappAdapter: ChannelAdapter = {
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}))
-        console.error(`[WhatsApp] sendMedia failed (${mediaType}):`, (err as any)?.error?.message)
+        log.error({ mediaType, err: (err as any)?.error?.message }, 'WhatsApp sendMedia failed')
       }
     } catch (err: any) {
       // Network/transport error — non-fatal, text delivery continues unaffected
-      console.error(`[WhatsApp] sendMedia transport error:`, err?.message)
+      log.error({ err: err?.message }, 'WhatsApp sendMedia transport error')
     }
   },
 }

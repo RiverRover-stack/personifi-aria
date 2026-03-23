@@ -1,6 +1,9 @@
 
 import type { ToolExecutionResult } from '../hooks.js'
 import { cacheGet, cacheKey, cacheSet } from './scrapers/cache.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'places' })
 
 interface PlaceSearchParams {
     query: string
@@ -109,19 +112,19 @@ async function resolvePhotoUri(photoName: string, apiKey: string): Promise<strin
 
     try {
         const url = buildPhotoMetadataUrl(photoName, apiKey)
-        console.log(`[Places Photo] Resolving: ${photoName.substring(0, 60)}...`)
+        log.info({ photoName: photoName.substring(0, 60) }, 'Resolving photo')
         const response = await fetch(url, {
             signal: AbortSignal.timeout(5000),
         })
         if (!response.ok) {
-            console.warn(`[Places Photo] Resolution failed: ${response.status} ${response.statusText}`)
+            log.warn({ status: response.status, statusText: response.statusText }, 'Photo resolution failed')
             // Fallback: use direct media URL (will redirect to actual photo)
             const fallbackUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=800&key=${apiKey}`
             return fallbackUrl
         }
         const payload = await response.json() as { photoUri?: string }
         if (typeof payload.photoUri === 'string' && payload.photoUri.length > 0) {
-            console.log(`[Places Photo] Resolved: ${payload.photoUri.substring(0, 60)}...`)
+            log.info({ photoUri: payload.photoUri.substring(0, 60) }, 'Photo resolved')
             photoUriCache.set(photoName, {
                 uri: payload.photoUri,
                 expiresAt: Date.now() + PHOTO_URI_CACHE_TTL,
@@ -129,12 +132,12 @@ async function resolvePhotoUri(photoName: string, apiKey: string): Promise<strin
             sweepPhotoUriCache()
             return payload.photoUri
         }
-        console.warn(`[Places Photo] No photoUri in response, using fallback redirect URL`)
+        log.warn('No photoUri in response, using fallback redirect URL')
         // Fallback: use direct media URL (will redirect to actual photo)
         const fallbackUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=800&key=${apiKey}`
         return fallbackUrl
     } catch (err) {
-        console.warn(`[Places Photo] Resolution error: ${err instanceof Error ? err.message : String(err)}`)
+        log.warn({ err }, 'Photo resolution error')
         // Fallback: use direct media URL (will redirect to actual photo)
         const fallbackUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=800&key=${apiKey}`
         return fallbackUrl
@@ -152,13 +155,13 @@ async function hydratePlaceImages(
             : 'No rating yet'
         const photoName = place.photos?.[0]?.name
         if (!photoName) {
-            console.log(`[Places Photo] No photo for ${name}`)
+            log.info({ name }, 'No photo available')
             return null
         }
 
         const resolvedPhotoUrl = await resolvePhotoUri(photoName, apiKey)
         if (!resolvedPhotoUrl) {
-            console.warn(`[Places Photo] Failed to resolve photo for ${name}`)
+            log.warn({ name }, 'Failed to resolve photo')
             return null
         }
 
@@ -173,10 +176,10 @@ async function hydratePlaceImages(
         if (result.status === 'fulfilled' && result.value) {
             images.push(result.value)
         } else if (result.status === 'rejected') {
-            console.warn(`[Places Photo] Image hydration rejected: ${result.reason}`)
+            log.warn({ err: result.reason }, 'Image hydration rejected')
         }
     }
-    console.log(`[Places Photo] Hydrated ${images.length}/${places.length} place images`)
+    log.info({ hydrated: images.length, total: places.length }, 'Place images hydrated')
     return images
 }
 
@@ -208,7 +211,7 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
 
     const cached = cacheGet<ToolExecutionResult>(key)
     if (cached) {
-        console.log(`[Places Tool] Cache hit for "${normalizedQuery}" @ "${normalizedLocation}"`)
+        log.info({ query: normalizedQuery, location: normalizedLocation }, 'Cache hit')
         const payload = cached.data as PlacesPayload
         if (payload && typeof payload === 'object' && Array.isArray(payload.raw)) {
             const hasFreshImages = Array.isArray(payload.images)
@@ -368,7 +371,7 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
         return result
 
     } catch (error: any) {
-        console.error('[Places Tool] Error:', error)
+        log.error({ err: error }, 'Places tool error')
         return {
             success: false,
             data: null,

@@ -3,6 +3,10 @@
  * Multi-layer defense against prompt injection
  */
 
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'sanitize' })
+
 // Maximum allowed message length
 const MAX_MESSAGE_LENGTH = 500
 
@@ -124,12 +128,11 @@ export function logSuspiciousInput(
   result: SanitizationResult
 ): void {
   if (result.suspiciousPatterns.length > 0) {
-    console.warn('[SECURITY] Suspicious input detected', {
+    log.warn({
       userId,
       channel,
       patterns: result.suspiciousPatterns,
       inputPreview: originalInput.slice(0, 100),
-      timestamp: new Date().toISOString(),
-    })
+    }, 'Suspicious input detected')
   }
 }

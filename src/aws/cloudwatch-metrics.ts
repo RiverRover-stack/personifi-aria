@@ -1,5 +1,8 @@
 import { sharedClients } from './aws-clients.js'
 import { getAwsConfig } from './aws-config.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'cloudwatch-metrics' })
 
 // ─── Metric Names ─────────────────────────────────────────────────────────────
 
@@ -96,7 +99,7 @@ export async function publishMetric(
         }))
     } catch (err) {
         // Metric publishing should never break the main flow
-        console.error(`[CloudWatch] Failed to publish metric ${metricName}:`, err)
+        log.error({ err, metricName }, 'Failed to publish metric')
     }
 }
 
@@ -136,7 +139,7 @@ export async function publishMetrics(
             }))
         }
     } catch (err) {
-        console.error('[CloudWatch] Failed to publish metric batch:', err)
+        log.error({ err }, 'Failed to publish metric batch')
     }
 }
 
@@ -257,4 +260,3 @@ export function getDashboardBody(
 
     return JSON.stringify(dashboard)
 }
-

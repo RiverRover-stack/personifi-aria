@@ -1,5 +1,8 @@
 import type { ToolExecutionResult } from '../hooks.js'
 import { cacheGet, cacheKey, cacheSet } from './scrapers/cache.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'weather' })
 
 interface WeatherParams {
     location: string
@@ -28,7 +31,7 @@ export async function getWeather(params: WeatherParams): Promise<ToolExecutionRe
 
     const cached = cacheGet<ToolExecutionResult>(key)
     if (cached) {
-        console.log(`[Weather Tool] Cache hit for "${normalizedLocation}"`)
+        log.info({ location: normalizedLocation }, 'Cache hit')
         return cached
     }
 
@@ -82,7 +85,7 @@ export async function getWeather(params: WeatherParams): Promise<ToolExecutionRe
         return result
 
     } catch (error: any) {
-        console.error('[Weather Tool] Error:', error)
+        log.error({ err: error }, 'Weather tool error')
         return {
             success: false,
             data: null,

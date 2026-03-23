@@ -9,6 +9,9 @@
  */
 
 import { Redis } from 'ioredis'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'redis-client' })
 
 let redisClient: Redis | null = null
 let initialized = false
@@ -22,7 +25,7 @@ export function initRedis(): void {
 
     const redisUrl = process.env.REDIS_URL
     if (!redisUrl) {
-        console.log('[archivist/redis] REDIS_URL not set — Redis caching disabled')
+        log.info('REDIS_URL not set — Redis caching disabled')
         initialized = true // deliberate skip — no retry needed
         return
     }
@@ -36,22 +39,22 @@ export function initRedis(): void {
 
         client.on('error', (err: Error) => {
             // Log but don't crash — Redis is optional
-            console.error('[archivist/redis] Connection error:', err.message)
+            log.error({ err }, 'Connection error')
         })
         client.on('connect', () => {
-            console.log('[archivist/redis] Connected to Redis')
+            log.info('Connected to Redis')
         })
         client.on('reconnecting', () => {
-            console.warn('[archivist/redis] Reconnecting to Redis...')
+            log.warn('Reconnecting to Redis...')
         })
         client.on('close', () => {
-            console.warn('[archivist/redis] Connection closed')
+            log.warn('Connection closed')
         })
 
         redisClient = client
         initialized = true // only mark initialized after successful creation
     } catch (err) {
-        console.error('[archivist/redis] Failed to initialize Redis:', err)
+        log.error({ err }, 'Failed to initialize Redis')
         redisClient = null
         // DO NOT set initialized = true here — allows retry on next call
     }

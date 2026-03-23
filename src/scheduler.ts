@@ -13,6 +13,9 @@
 
 // @ts-ignore - node-cron has no types
 import cron from 'node-cron'
+import { logger } from './logger.js'
+
+const log = logger.child({ module: 'scheduler' })
 import { runProactiveForAllUsers, runTopicFollowUpsForAllUsers, loadUsersFromDB } from './media/proactiveRunner.js'
 import { registerMediaCron } from './cron/media-cron.js'
 import { runMigrations, cleanupExpiredRateLimits } from './character/session-store.js'
@@ -30,28 +33,28 @@ import { sweepStaleTopics } from './topic-intent/sweep.js'
 export function initScheduler(_databaseUrl: string) {
   // ── 1. Health heartbeat — every 30 seconds ──────────────────────────────
   setInterval(() => {
-    console.log(`[HEARTBEAT] alive — ${new Date().toISOString()}`)
+    log.info('Heartbeat')
   }, 30_000)
 
   // ── 2a. Topic follow-ups — every 30 minutes (Mode A, priority) ─────────
   //    Checks warm topics (confidence > 25%, inactive 4h+) and sends natural follow-ups.
   cron.schedule('*/30 * * * *', async () => {
-    console.log(`[SCHEDULER] Topic follow-up run — ${new Date().toISOString()}`)
+    log.info('Topic follow-up run')
     try {
       await runTopicFollowUpsForAllUsers()
     } catch (err) {
-      console.error('[SCHEDULER] Topic follow-up error:', err)
+      log.error({ err }, 'Topic follow-up error')
     }
   })
 
   // ── 2b. Content blast pipeline — every 2 hours (Mode B, fallback) ───────
   //    Generic content blast when no warm topics exist. Gate checks in runner.
   cron.schedule('0 */2 * * *', async () => {
-    console.log(`[SCHEDULER] Content blast pipeline triggered — ${new Date().toISOString()}`)
+    log.info('Content blast pipeline triggered')
     try {
       await runProactiveForAllUsers()
     } catch (err) {
-      console.error('[SCHEDULER] Content blast pipeline error:', err)
+      log.error({ err }, 'Content blast pipeline error')
     }
   })
 
@@ -63,7 +66,7 @@ export function initScheduler(_databaseUrl: string) {
     try {
       await runSocialOutbound()
     } catch (err) {
-      console.error('[SCHEDULER] Social outbound error:', err)
+      log.error({ err }, 'Social outbound error')
     }
   })
 
@@ -71,9 +74,9 @@ export function initScheduler(_databaseUrl: string) {
   cron.schedule('0 * * * *', async () => {
     try {
       const deleted = await cleanupExpiredRateLimits()
-      if (deleted > 0) console.log(`[SCHEDULER] Cleaned ${deleted} stale rate_limit rows`)
+      if (deleted > 0) log.info({ deleted }, 'Cleaned stale rate_limit rows')
     } catch (err) {
-      console.error('[SCHEDULER] Rate limit cleanup error:', err)
+      log.error({ err }, 'Rate limit cleanup error')
     }
   })
 
@@ -83,7 +86,7 @@ export function initScheduler(_databaseUrl: string) {
     try {
       await sweepStaleTopics()
     } catch (err) {
-      console.error('[SCHEDULER] Stale topic sweep error:', err)
+      log.error({ err }, 'Stale topic sweep error')
     }
   })
 
@@ -92,12 +95,10 @@ export function initScheduler(_databaseUrl: string) {
     try {
       const summary = await checkPriceAlerts()
       if (!summary.skipped && (summary.checked > 0 || summary.triggered > 0 || summary.errors > 0)) {
-        console.log(
-          `[SCHEDULER] Price alerts checked=${summary.checked} triggered=${summary.triggered} errors=${summary.errors}`,
-        )
+        log.info({ checked: summary.checked, triggered: summary.triggered, errors: summary.errors }, 'Price alerts checked')
       }
     } catch (err) {
-      console.error('[SCHEDULER] Price alert check error:', err)
+      log.error({ err }, 'Price alert check error')
     }
   })
 
@@ -107,7 +108,7 @@ export function initScheduler(_databaseUrl: string) {
     try {
       await refreshAllStimuliForActiveLocations()
     } catch (err) {
-      console.error('[SCHEDULER] Stimulus batch refresh error:', err)
+      log.error({ err }, 'Stimulus batch refresh error')
     }
   })
 
@@ -116,7 +117,7 @@ export function initScheduler(_databaseUrl: string) {
     try {
       await runIntelligenceCron(3)
     } catch (err) {
-      console.error('[SCHEDULER] Intelligence cron error:', err)
+      log.error({ err }, 'Intelligence cron error')
     }
   })
 
@@ -125,7 +126,7 @@ export function initScheduler(_databaseUrl: string) {
     try {
       await runFriendBridgeOutbound()
     } catch (err) {
-      console.error('[SCHEDULER] Friend bridge outbound error:', err)
+      log.error({ err }, 'Friend bridge outbound error')
     }
   })
 
@@ -134,7 +135,7 @@ export function initScheduler(_databaseUrl: string) {
     try {
       await processMemoryWriteQueue(20)
     } catch (err) {
-      console.error('[SCHEDULER] Memory queue worker failed:', err)
+      log.error({ err }, 'Memory queue worker failed')
     }
   })
 
@@ -143,7 +144,7 @@ export function initScheduler(_databaseUrl: string) {
     try {
       await checkAndSummarizeSessions()
     } catch (err) {
-      console.error('[SCHEDULER] Session summarization failed:', err)
+      log.error({ err }, 'Session summarization failed')
     }
   })
 
@@ -153,9 +154,9 @@ export function initScheduler(_databaseUrl: string) {
       await runMigrations()
       await loadUsersFromDB()
     } catch (err) {
-      console.error('[SCHEDULER] Startup DB tasks failed:', err)
+      log.error({ err }, 'Startup DB tasks failed')
     }
   }, 8000) // after DB pool is ready
 
-  console.log('[SCHEDULER] Initialized — heartbeat (30s) + topic-followups (*/30m) + content-blast (*/2h) + media (*/6h) + price alerts (*/30) + weather (*/30) + traffic (*/30) + festival (*/6h) + intelligence (*/2h) + friend-bridge (*/30m) + memory queue (*/30s) + session summaries (*/5m)')
+  log.info('Scheduler initialized')
 }

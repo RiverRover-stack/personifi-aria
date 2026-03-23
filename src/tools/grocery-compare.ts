@@ -11,6 +11,9 @@ import { scrapeBlinkit, type BlinkitResult } from './scrapers/blinkit.js'
 import { scrapeInstamart, type InstamartResult } from './scrapers/instamart.js'
 import { scrapeZepto, type ZeptoResult } from './scrapers/zepto.js'
 import { cacheGet, cacheSet, cacheKey } from './scrapers/cache.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'grocery-compare' })
 
 type GroceryItem = BlinkitResult | InstamartResult | ZeptoResult
 
@@ -29,11 +32,11 @@ export async function compareGroceryPrices(params: GroceryCompareParams): Promis
     const key = cacheKey('compare_grocery_prices', params as unknown as Record<string, unknown>)
     const cached = cacheGet<{ formatted: string; raw: GroceryItem[]; images: { url: string; caption: string }[] }>(key)
     if (cached) {
-        console.log('[GroceryCompare] Cache hit')
+        log.info('Cache hit')
         return { success: true, data: cached }
     }
 
-    console.log(`[GroceryCompare] Searching "${query}" across Blinkit, Instamart, Zepto`)
+    log.info({ query }, 'Searching across Blinkit, Instamart, Zepto')
 
     const [blinkitResult, instamartResult, zeptoResult] = await Promise.allSettled([
         scrapeBlinkit({ query }),
@@ -41,9 +44,9 @@ export async function compareGroceryPrices(params: GroceryCompareParams): Promis
         scrapeZepto({ query }),
     ])
 
-    if (blinkitResult.status === 'rejected') console.error('[GroceryCompare] Blinkit failed:', blinkitResult.reason)
-    if (instamartResult.status === 'rejected') console.error('[GroceryCompare] Instamart failed:', instamartResult.reason)
-    if (zeptoResult.status === 'rejected') console.error('[GroceryCompare] Zepto failed:', zeptoResult.reason)
+    if (blinkitResult.status === 'rejected') log.error({ err: blinkitResult.reason }, 'Blinkit failed')
+    if (instamartResult.status === 'rejected') log.error({ err: instamartResult.reason }, 'Instamart failed')
+    if (zeptoResult.status === 'rejected') log.error({ err: zeptoResult.reason }, 'Zepto failed')
 
     const blinkitData: BlinkitResult[] = blinkitResult.status === 'fulfilled' ? blinkitResult.value : []
     const instamartData: InstamartResult[] = instamartResult.status === 'fulfilled' ? instamartResult.value : []

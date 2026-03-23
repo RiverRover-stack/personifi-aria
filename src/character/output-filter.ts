@@ -3,6 +3,10 @@
  * Detect and filter anomalous or potentially harmful responses
  */
 
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'output-filter' })
+
 // Patterns that should never appear in Aria's responses
 const FORBIDDEN_OUTPUT_PATTERNS = [
   // System prompt leakage
@@ -83,7 +87,7 @@ export function filterOutput(output: string): OutputFilterResult {
 
   // Only flag if it's a long response that sounds nothing like Aria
   if (output.length > 200 && !hasAriaVoice) {
-    console.warn('[OUTPUT] Response may be off-character:', output.slice(0, 100))
+    log.warn({ preview: output.slice(0, 100) }, 'Response may be off-character')
     // Don't filter, just log - could be a valid edge case
   }
 

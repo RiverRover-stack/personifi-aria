@@ -11,6 +11,9 @@
  */
 
 import { getRedis } from './redis-client.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'redis-cache' })
 
 // ─── Key Factories ───────────────────────────────────────────────────────────
 
@@ -32,7 +35,7 @@ export async function cacheEmbedding(text: string, vector: number[]): Promise<vo
     try {
         await redis.setex(KEY_EMBEDDING(text), DEFAULT_TTL_S, JSON.stringify(vector))
     } catch (err) {
-        console.error('[archivist/cache] cacheEmbedding error:', (err as Error).message)
+        log.error({ err }, 'cacheEmbedding error')
     }
 }
 
@@ -47,7 +50,7 @@ export async function getCachedEmbedding(text: string): Promise<number[] | null>
         if (!raw) return null
         return JSON.parse(raw) as number[]
     } catch (err) {
-        console.error('[archivist/cache] getCachedEmbedding error:', (err as Error).message)
+        log.error({ err }, 'getCachedEmbedding error')
         return null
     }
 }
@@ -70,7 +73,7 @@ export async function cacheSession(userId: string, session: CachedSession): Prom
     try {
         await redis.setex(KEY_SESSION(userId), DEFAULT_TTL_S, JSON.stringify(session))
     } catch (err) {
-        console.error('[archivist/cache] cacheSession error:', (err as Error).message)
+        log.error({ err }, 'cacheSession error')
     }
 }
 
@@ -85,7 +88,7 @@ export async function getCachedSession(userId: string): Promise<CachedSession | 
         if (!raw) return null
         return JSON.parse(raw) as CachedSession
     } catch (err) {
-        console.error('[archivist/cache] getCachedSession error:', (err as Error).message)
+        log.error({ err }, 'getCachedSession error')
         return null
     }
 }
@@ -99,7 +102,7 @@ export async function invalidateSession(userId: string): Promise<void> {
     try {
         await redis.del(KEY_SESSION(userId))
     } catch (err) {
-        console.error('[archivist/cache] invalidateSession error:', (err as Error).message)
+        log.error({ err }, 'invalidateSession error')
     }
 }
 
@@ -116,7 +119,7 @@ export async function cachePreferences(userId: string, prefs: PreferencesMap): P
     try {
         await redis.setex(KEY_PREFERENCES(userId), DEFAULT_TTL_S, JSON.stringify(prefs))
     } catch (err) {
-        console.error('[archivist/cache] cachePreferences error:', (err as Error).message)
+        log.error({ err }, 'cachePreferences error')
     }
 }
 
@@ -131,7 +134,7 @@ export async function getCachedPreferences(userId: string): Promise<PreferencesM
         if (!raw) return null
         return JSON.parse(raw) as PreferencesMap
     } catch (err) {
-        console.error('[archivist/cache] getCachedPreferences error:', (err as Error).message)
+        log.error({ err }, 'getCachedPreferences error')
         return null
     }
 }
@@ -145,6 +148,6 @@ export async function invalidatePreferences(userId: string): Promise<void> {
     try {
         await redis.del(KEY_PREFERENCES(userId))
     } catch (err) {
-        console.error('[archivist/cache] invalidatePreferences error:', (err as Error).message)
+        log.error({ err }, 'invalidatePreferences error')
     }
 }

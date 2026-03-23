@@ -12,6 +12,9 @@ import Groq from 'groq-sdk'
 import type { ToolMediaDirective, ToolReflectionSummary } from '../hooks.js'
 import { withGroqRetry } from '../utils/retry.js'
 import { extractToolMediaContext } from '../media/tool-media-context.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'tool-reflection' })
 
 export interface ToolReflectionResult {
     reflection: ToolReflectionSummary
@@ -169,7 +172,7 @@ Rules:
         if (!reflected) return null
         return reflected
     } catch (err) {
-        console.warn(`[brain/reflection] ${toolName}: reflection failed, using fallback directive`, (err as Error).message)
+        log.warn({ toolName, err }, 'Reflection failed, using fallback directive')
         return {
             reflection: { summary: '', keyFacts: [] },
             mediaDirective: fallbackDirective,

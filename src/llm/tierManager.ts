@@ -13,6 +13,9 @@
 
 import Groq from 'groq-sdk'
 import { withGroqRetry } from '../utils/retry.js'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 'tier-manager' })
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -177,7 +180,7 @@ async function callWithFallback(
 
         for (let attempt = 0; attempt < BACKOFF_DELAYS.length; attempt++) {
             try {
-                console.log(`[LLM] Using ${provider.name} (${tier})`)
+                log.info({ provider: provider.name, tier }, 'Using provider')
                 const text = await provider.call(messages, opts)
                 return { text, provider: provider.name }
             } catch (err: any) {
@@ -189,30 +192,30 @@ async function callWithFallback(
                 if (is429) {
                     if (attempt < BACKOFF_DELAYS.length - 1) {
                         const delay = BACKOFF_DELAYS[attempt]
-                        console.warn(`[LLM] ${provider.name} rate-limited, retrying in ${delay}ms (attempt ${attempt + 1})`)
+                        log.warn({ provider: provider.name, delay, attempt: attempt + 1 }, 'Rate-limited, retrying')
                         await sleep(delay)
                         continue
                     }
                     // Exhausted retries for this provider → fallback to next
-                    console.warn(`[LLM] ${provider.name} exhausted, falling back to next provider`)
+                    log.warn({ provider: provider.name }, 'Provider exhausted, falling back to next')
                     break
                 }
 
                 // Non-429 error — retry once, then move on
                 if (attempt === 0) {
-                    console.warn(`[LLM] ${provider.name} error: ${err?.message}, retrying once`)
+                    log.warn({ provider: provider.name, err }, 'Provider error, retrying once')
                     await sleep(BACKOFF_DELAYS[0])
                     continue
                 }
 
-                console.error(`[LLM] ${provider.name} failed permanently:`, err?.message)
+                log.error({ provider: provider.name, err }, 'Provider failed permanently')
                 break
             }
         }
     }
 
     // All providers exhausted
-    console.error(`[LLM] All ${tier} providers exhausted`)
+    log.error({ tier }, 'All providers exhausted')
     return { text: '', provider: 'none' }
 }
 

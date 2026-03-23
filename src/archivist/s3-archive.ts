@@ -11,6 +11,9 @@
  */
 
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import { logger } from '../logger.js'
+
+const log = logger.child({ module: 's3-archive' })
 
 // ─── S3 Client (lazy singleton) ───────────────────────────────────────────────
 
@@ -98,11 +101,11 @@ export async function archiveSession(
             })
         )
 
-        console.log(`[archivist/s3] Archived session ${sessionId} → s3://${bucket}/${s3Key}`)
+        log.info({ sessionId, bucket, s3Key }, 'Archived session')
         return { success: true, s3Key }
     } catch (err) {
         const msg = (err as Error).message
-        console.error(`[archivist/s3] Failed to archive session ${sessionId}:`, msg)
+        log.error({ err, sessionId }, 'Failed to archive session')
         return { success: false, error: msg }
     }
 }
