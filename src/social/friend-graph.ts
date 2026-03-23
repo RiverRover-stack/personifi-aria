@@ -318,11 +318,12 @@ export async function resolveInviteCode(
     const inviterUserId = rows[0].inviter_user_id
     if (inviterUserId === newUserId) return { success: false }
 
-    // Mark code as used
-    await pool.query(
+    // Mark code as used — check rowCount to guard against concurrent consumers
+    const updateResult = await pool.query(
         `UPDATE invite_codes SET used_by = $1, used_at = NOW() WHERE code = $2 AND used_by IS NULL`,
         [newUserId, code]
     )
+    if ((updateResult.rowCount ?? 0) === 0) return { success: false }
 
     // Create bilateral friendship (fire-and-forget errors — addFriend is idempotent)
     await Promise.allSettled([

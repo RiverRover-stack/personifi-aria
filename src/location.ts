@@ -118,7 +118,7 @@ export async function upsertSavedLocation(userId: string, loc: SavedLocationInpu
     await pool.query(
         `INSERT INTO saved_locations (user_id, label, area, lat, lng, is_default, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, NOW())
-         ON CONFLICT (user_id, LOWER(label)) DO UPDATE SET
+         ON CONFLICT (user_id, (LOWER(label))) DO UPDATE SET
              area = EXCLUDED.area,
              lat = EXCLUDED.lat,
              lng = EXCLUDED.lng,

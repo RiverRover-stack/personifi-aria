@@ -578,8 +578,10 @@ server.get('/api/user/:telegramUserId/locations', async (request, reply) => {
   const { validateInitData } = await import('./telegram/webapp-validation.js')
   const validation = validateInitData(initDataHeader, TOKEN())
   if (!validation.valid) return reply.code(401).send({ error: 'Invalid initData' })
-  const { telegramUserId } = request.params as { telegramUserId: string }
-  const user = await getOrCreateUser('telegram', telegramUserId)
+  // IDOR fix: use authenticated user from initData, not the URL param
+  const authedTgId = String(validation.data?.user?.id ?? '')
+  if (!authedTgId) return reply.code(401).send({ error: 'No user in initData' })
+  const user = await getOrCreateUser('telegram', authedTgId)
   const { getSavedLocations } = await import('./location.js')
   return getSavedLocations(user.userId)
 })

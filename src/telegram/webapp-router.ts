@@ -71,7 +71,25 @@ export async function handleWebAppData(
     }
     // Menu actions that look like commands get routed to the command handler
     const action = result.data.action
-    if (action.startsWith('/')) {
+    if (action === 'request_contacts') {
+      // Send a ReplyKeyboard with KeyboardButtonRequestUsers so the user can share contacts
+      const token = process.env.TELEGRAM_BOT_TOKEN
+      if (token) {
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: '👥 Tap the button below to share contacts with Aria:',
+            reply_markup: {
+              keyboard: [[{ text: '📱 Share contacts', request_users: { request_id: 1, user_is_bot: false } }]],
+              resize_keyboard: true,
+              one_time_keyboard: true,
+            },
+          }),
+        }).catch(() => {})
+      }
+    } else if (action.startsWith('/')) {
       const { getOrCreateUser } = await import('../character/session-store.js')
       const user = await getOrCreateUser('telegram', userId)
       const { handleCommand } = await import('./command-handlers.js')
