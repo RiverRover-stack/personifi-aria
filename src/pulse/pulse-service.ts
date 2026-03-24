@@ -5,6 +5,7 @@ import { extractEngagementSignals } from './signal-extractor.js'
 import { applyDecay, clampScore, isStale, transitionState } from './state-machine.js'
 import type { EngagementState, PulseInput, PulseRecord, PulseSignalHistoryEntry } from './types.js'
 import { logger } from '../logger.js'
+import { insertPulseHistory } from '../db/fusion-tables.js'
 
 const log = logger.child({ module: 'pulse-service' })
 
@@ -117,6 +118,18 @@ export class PulseService {
         delta: signals.scoreDelta,
         signals: signals.matchedSignals.join(',') || 'none',
       }, 'State transition')
+
+      // Write pulse_history on every state change (Phase 4 #122)
+      setImmediate(() => {
+        insertPulseHistory(getPool(), {
+          user_id:        input.userId,
+          score:          nextScore,
+          state:          nextState,
+          previous_state: current.state,
+          delta:          signals.scoreDelta,
+          signal_source:  'user_message',
+        }).catch(err => log.error({ userId: input.userId, err }, 'Failed to write pulse_history'))
+      })
     } else {
       log.info({ userId: input.userId, state: nextState, score: nextScore, delta: signals.scoreDelta }, 'Pulse update')
     }
