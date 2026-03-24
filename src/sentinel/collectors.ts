@@ -51,8 +51,8 @@ export async function collectStimulusRefresh(userId: string): Promise<StimulusIn
  * Was: every-15m + every-30m crons
  * TODO: implement squad graph query when social module exposes per-user API
  */
-export async function collectSocialMonitor(_userId: string): Promise<StimulusInput[]> {
-    return []
+export function collectSocialMonitor(_userId: string): Promise<StimulusInput[]> {
+    return Promise.resolve([])
 }
 
 // ─── topic_followup: warm topic re-engagement ────────────────────────────────
@@ -62,8 +62,8 @@ export async function collectSocialMonitor(_userId: string): Promise<StimulusInp
  * Was: every-30m cron (runTopicFollowUpsForAllUsers)
  * TODO: expose per-user variant from topic-intent module
  */
-export async function collectTopicFollowup(_userId: string): Promise<StimulusInput[]> {
-    return []
+export function collectTopicFollowup(_userId: string): Promise<StimulusInput[]> {
+    return Promise.resolve([])
 }
 
 // ─── content_scan: trending + relevant content ───────────────────────────────
@@ -73,8 +73,8 @@ export async function collectTopicFollowup(_userId: string): Promise<StimulusInp
  * Was: every-2h + every-6h crons
  * TODO: implement when content intelligence exposes per-user scoring
  */
-export async function collectContentScan(_userId: string): Promise<StimulusInput[]> {
-    return []
+export function collectContentScan(_userId: string): Promise<StimulusInput[]> {
+    return Promise.resolve([])
 }
 
 // ─── maintenance: memory_process ────────────────────────────────────────────

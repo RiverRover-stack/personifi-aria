@@ -10,8 +10,8 @@ vi.mock('../character/session-store.js', () => ({
 
 vi.mock('./state-store.js', () => ({
     loadSentinelUsersWithContext: vi.fn().mockResolvedValue([]),
-    incrementDailyFire:           vi.fn().mockResolvedValue(undefined),
-    resetDailyCountsIfNeeded:     vi.fn().mockResolvedValue(undefined),
+    incrementDailyFire:           vi.fn().mockResolvedValue(),
+    resetDailyCountsIfNeeded:     vi.fn().mockResolvedValue(),
     saveSentinelMode:             vi.fn().mockResolvedValue(undefined),
 }))
 
