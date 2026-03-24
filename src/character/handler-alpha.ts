@@ -38,6 +38,7 @@ import type { HistoryMessage } from '../alpha/context-manager.js'
 import { registerProactiveUser, updateUserActivity } from '../media/proactiveRunner.js'
 import { handleOnboarding, type OnboardingResult } from '../onboarding/onboarding-flow.js'
 import { generateLinkCode, redeemLinkCode, getLinkedUserIds } from '../identity.js'
+import { insertSignalPacket } from '../db/fusion-tables.js'
 
 import type { MessageResponse, HandleMessageOptions } from './handler.js'
 export type { MessageResponse, HandleMessageOptions }
@@ -251,16 +252,28 @@ export async function handleMessageAlpha(
         pulseService.recordEngagement({
             userId: user.userId,
             message: userMessage,
-        }).catch(() => {}),
+        }).catch(() => { /* fire-and-forget */ }),
 
         // Memory writes
         enqueueMemoryWrite(user.userId, 'ADD_MEMORY', { userId: user.userId, message: userMessage, history: [] })
-            .catch(() => {}),
+            .catch(() => { /* fire-and-forget */ }),
         enqueueMemoryWrite(user.userId, 'GRAPH_WRITE', { userId: user.userId, message: userMessage })
-            .catch(() => {}),
+            .catch(() => { /* fire-and-forget */ }),
         enqueueMemoryWrite(user.userId, 'SAVE_PREFERENCE', { userId: user.userId, message: userMessage })
-            .catch(() => {}),
+            .catch(() => { /* fire-and-forget */ }),
     ])
+
+    // Wire signal packet for Sentinel recalibration (#122)
+    // Sentinel reads these on its next loop to recalibrate proactive scoring.
+    setImmediate(() => {
+        insertSignalPacket(pool, {
+            user_id:             user.userId,
+            invalidated_stimuli: null,
+            current_direction:   null,
+            extracted_intents:   null,
+            engagement_signal:   'neutral',
+        }).catch(() => { /* fire-and-forget — Sentinel tolerates missing packets */ })
+    })
 
     const totalMs = Date.now() - handlerStart
     log.info({ totalMs }, `[Handler/Alpha] complete in ${totalMs}ms`)
