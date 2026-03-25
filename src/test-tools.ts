@@ -393,12 +393,11 @@ async function runAgentTests(): Promise<{ passed: number; failed: number }> {
             },
         },
         {
-            name: 'Proactive Runner',
+            name: 'Sentinel Loop',
             fn: async () => {
-                const { runProactiveForAllUsers, runTopicFollowUpsForAllUsers } = await import('./media/proactiveRunner.js')
-                if (typeof runProactiveForAllUsers !== 'function') throw new Error('runProactiveForAllUsers missing')
-                if (typeof runTopicFollowUpsForAllUsers !== 'function') throw new Error('runTopicFollowUpsForAllUsers missing')
-                return 'runProactiveForAllUsers() + runTopicFollowUpsForAllUsers() ✓'
+                const { startSentinel } = await import('./sentinel/index.js')
+                if (typeof startSentinel !== 'function') throw new Error('startSentinel missing')
+                return 'startSentinel() ✓ (proactiveRunner retired — Unit 8)'
             },
         },
         {

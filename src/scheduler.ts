@@ -12,7 +12,6 @@
  */
 
 import { logger } from './logger.js'
-import { loadUsersFromDB } from './media/proactiveRunner.js'
 import { registerMediaCron } from './cron/media-cron.js'
 import { runMigrations } from './character/session-store.js'
 import { startSentinel } from './sentinel/index.js'
@@ -56,7 +55,6 @@ export function initScheduler(_databaseUrl: string) {
   setTimeout(async () => {
     try {
       await runMigrations()
-      await loadUsersFromDB()
       startSentinel()
     } catch (err) {
       log.error({ err }, 'Startup DB tasks failed')
