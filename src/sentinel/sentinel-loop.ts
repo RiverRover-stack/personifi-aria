@@ -27,6 +27,8 @@ import {
     collectSocialMonitor,
     collectTopicFollowup,
     collectContentScan,
+    collectMessMenu,
+    collectLocalEvents,
     runMemoryProcess,
     runSessionCleanup,
 } from './collectors.js'
@@ -147,6 +149,8 @@ async function processUser(ctx: SentinelUserContext, pool: Pool, result: Sentine
         { key: 'social_monitor',   category: 'social_monitor',   fn: collectSocialMonitor },
         { key: 'topic_followup',   category: 'topic_followup',   fn: collectTopicFollowup },
         { key: 'content_scan',     category: 'content_scan',     fn: collectContentScan },
+        { key: 'mess_menu',        category: 'mess_menu',        fn: collectMessMenu },
+        { key: 'local_event',      category: 'local_event',      fn: collectLocalEvents },
     ]
 
     for (const { key, category, fn } of collectorMap) {

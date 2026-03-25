@@ -11,6 +11,8 @@
 
 import type { StimulusInput } from '../fusion/types.js'
 import { getPersonalizedStimuli } from '../stimulus/stimulus-router.js'
+import { getMessMenuStimulus } from '../stimulus/mess-menu-stimulus.js'
+import { getLocalEventStimulus } from '../stimulus/local-event-stimulus.js'
 import { processMemoryWriteQueue } from '../archivist/memory-queue.js'
 import { checkAndSummarizeSessions } from '../archivist/session-summaries.js'
 import { sweepStaleTopics } from '../topic-intent/sweep.js'
@@ -85,6 +87,64 @@ export function collectContentScan(_userId: string): Promise<StimulusInput[]> {
  */
 export async function runMemoryProcess(): Promise<void> {
     await processMemoryWriteQueue(20)
+}
+
+// ─── mess_menu: hostel meal stimulus ─────────────────────────────────────────
+
+/**
+ * Collect hostel mess menu stimulus for a user.
+ * Returns a StimulusInput when the current time falls within a meal window
+ * and the user's hostel has a menu for today. Returns [] otherwise.
+ * Phase 5, Issue #135.
+ */
+export async function collectMessMenu(userId: string): Promise<StimulusInput[]> {
+    try {
+        const action = await getMessMenuStimulus(userId)
+        if (!action) return []
+        return [{
+            type:   action.type,
+            key:    `mess_menu_${action.hashtag}_${action.priority}`,
+            weight: 0.5,
+            data: {
+                message:         action.message,
+                suggestedAction: action.suggestedAction,
+                hashtag:         action.hashtag,
+                priority:        action.priority,
+                raw:             action.raw,
+            },
+        }]
+    } catch {
+        return []
+    }
+}
+
+// ─── local_event: nearby upcoming events ─────────────────────────────────────
+
+/**
+ * Collect local event stimulus for a user.
+ * Returns the highest-interest-matched event within the next 3 days.
+ * Returns [] when no events match the user's interests or none are upcoming.
+ * Phase 5, Issue #135.
+ */
+export async function collectLocalEvents(userId: string): Promise<StimulusInput[]> {
+    try {
+        const action = await getLocalEventStimulus(userId)
+        if (!action) return []
+        return [{
+            type:   action.type,
+            key:    `local_event_${action.hashtag}_${action.priority}`,
+            weight: 0.6,
+            data: {
+                message:         action.message,
+                suggestedAction: action.suggestedAction,
+                hashtag:         action.hashtag,
+                priority:        action.priority,
+                raw:             action.raw,
+            },
+        }]
+    } catch {
+        return []
+    }
 }
 
 // ─── maintenance: session_cleanup ───────────────────────────────────────────

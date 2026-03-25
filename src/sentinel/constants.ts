@@ -52,4 +52,6 @@ export const COLLECTOR_INTERVALS: Record<string, number> = {
     content_scan:    120,   // was */2h  cron — runs every 120 ticks
     memory_process:    1,   // was */30s cron — runs every tick
     session_cleanup:   5,   // was */5m  cron — runs every 5 ticks
+    mess_menu:        30,   // Phase 5: hostel meal windows change per meal bucket — every 30 ticks
+    local_event:      60,   // Phase 5: upcoming events (next 3 days) — hourly check
 }

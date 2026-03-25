@@ -18,6 +18,8 @@ export type StimulusCategory =
     | 'content_scan'       // trending + relevant content — was */2h + */6h crons
     | 'memory_process'     // queued memory writes (maintenance) — was */30s cron
     | 'session_cleanup'    // summarize + trim (maintenance) — was */5m cron
+    | 'mess_menu'          // hostel meal stimulus — Phase 5, Issue #135
+    | 'local_event'        // nearby events in next 3 days — Phase 5, Issue #135
 
 /** Per-user context loaded at the start of each Sentinel tick */
 export interface SentinelUserContext {
