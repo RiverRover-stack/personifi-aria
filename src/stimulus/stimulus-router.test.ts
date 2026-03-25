@@ -119,6 +119,14 @@ describe('getPersonalizedStimuli', () => {
             refreshFestivalState: vi.fn().mockResolvedValue(null),
         }))
 
+        vi.doMock('./mess-menu-stimulus.js', () => ({
+            getMessMenuStimulus: vi.fn().mockResolvedValue(null),
+        }))
+
+        vi.doMock('./local-event-stimulus.js', () => ({
+            getLocalEventStimulus: vi.fn().mockResolvedValue(null),
+        }))
+
         const { getPersonalizedStimuli } = await import('../stimulus/stimulus-router.js')
         // No .catch() — rejections surface as test failures
         const stimuli = await getPersonalizedStimuli('test-user-id')
@@ -134,7 +142,7 @@ describe('getPersonalizedStimuli', () => {
         expect(first).toHaveProperty('suggestedAction')
         expect(first).toHaveProperty('hashtag')
         expect(first).toHaveProperty('raw')
-        expect(['weather', 'traffic', 'festival']).toContain(first.type)
+        expect(['weather', 'traffic', 'festival', 'food', 'event']).toContain(first.type)
 
         // Results are sorted ascending by priority (lowest = most important)
         for (let i = 1; i < stimuli.length; i++) {
@@ -183,6 +191,12 @@ describe('getPersonalizedStimuli', () => {
             getFestivalState: vi.fn().mockReturnValue(null),
             refreshFestivalState: vi.fn(),
         }))
+        vi.doMock('./mess-menu-stimulus.js', () => ({
+            getMessMenuStimulus: vi.fn().mockResolvedValue(null),
+        }))
+        vi.doMock('./local-event-stimulus.js', () => ({
+            getLocalEventStimulus: vi.fn().mockResolvedValue(null),
+        }))
 
         const { getPersonalizedStimuli } = await import('../stimulus/stimulus-router.js')
         const stimuli = await getPersonalizedStimuli('stale-user')
@@ -194,13 +208,15 @@ describe('getPersonalizedStimuli', () => {
 // ─── Stimulus Router type tests ─────────────────────────────────────────────
 
 describe('StimulusAction type shape', () => {
-    it('StimulusType covers exactly weather | traffic | festival', () => {
-        const validTypes: string[] = ['weather', 'traffic', 'festival']
+    it('StimulusType covers exactly weather | traffic | festival | food | event', () => {
+        const validTypes: string[] = ['weather', 'traffic', 'festival', 'food', 'event']
         // Type-level guard — this will fail to compile if the union changes
         const check = (t: string) => validTypes.includes(t)
         expect(check('weather')).toBe(true)
         expect(check('traffic')).toBe(true)
         expect(check('festival')).toBe(true)
+        expect(check('food')).toBe(true)
+        expect(check('event')).toBe(true)
         expect(check('unknown')).toBe(false)
     })
 })

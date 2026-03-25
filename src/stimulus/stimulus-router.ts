@@ -9,6 +9,8 @@ import { getPool } from '../character/session-store.js'
 import { getWeatherState, refreshWeatherState } from '../weather/weather-stimulus.js'
 import { getTrafficState, refreshTrafficState } from './traffic-stimulus.js'
 import { getFestivalState, refreshFestivalState } from './festival-stimulus.js'
+import { getMessMenuStimulus } from './mess-menu-stimulus.js'
+import { getLocalEventStimulus } from './local-event-stimulus.js'
 import { sanitizeInput } from '../character/sanitize.js'
 import type { WeatherStimulusState } from '../weather/weather-stimulus.js'
 import type { TrafficStimulusState } from './traffic-stimulus.js'
@@ -16,7 +18,7 @@ import type { FestivalStimulusState } from './festival-stimulus.js'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type StimulusType = 'weather' | 'traffic' | 'festival'
+export type StimulusType = 'weather' | 'traffic' | 'festival' | 'food' | 'event'
 
 export interface StimulusAction {
     type: StimulusType
@@ -24,7 +26,7 @@ export interface StimulusAction {
     message: string
     suggestedAction: string
     hashtag: string
-    raw: WeatherStimulusState | TrafficStimulusState | FestivalStimulusState
+    raw: WeatherStimulusState | TrafficStimulusState | FestivalStimulusState | Record<string, unknown>
 }
 
 // ─── Priority mapping ─────────────────────────────────────────────────────────
@@ -190,6 +192,14 @@ export async function getPersonalizedStimuli(userId: string): Promise<StimulusAc
             raw: festival,
         })
     }
+
+    // Mess menu (DB-backed, time-windowed)
+    const messMenu = await getMessMenuStimulus(userId)
+    if (messMenu) stimuli.push(messMenu)
+
+    // Local events (DB-backed, interest-matched)
+    const localEvent = await getLocalEventStimulus(userId)
+    if (localEvent) stimuli.push(localEvent)
 
     // Sort by priority (lowest number = highest priority)
     return stimuli.sort((a, b) => a.priority - b.priority)

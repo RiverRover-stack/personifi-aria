@@ -195,6 +195,49 @@ export const ALPHA_TOOL_DEFINITIONS: ProviderTool[] = [
             },
         },
     },
+    {
+        type: 'function',
+        function: {
+            name: 'plan_trip',
+            description: 'Plan a trip with flights, hotels, activities, and weather for a destination. Use when the user wants to plan a holiday, a weekend getaway, or explore travel options.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    destination: {
+                        type: 'string',
+                        description: 'Destination city or airport code (e.g. "Goa", "Mumbai")',
+                    },
+                    origin: {
+                        type: 'string',
+                        description: 'Origin city (optional — defaults to user home location)',
+                    },
+                    departure_date: {
+                        type: 'string',
+                        description: 'Departure date in YYYY-MM-DD format (optional)',
+                    },
+                    return_date: {
+                        type: 'string',
+                        description: 'Return date in YYYY-MM-DD format. Omit for one-way.',
+                    },
+                    travelers: {
+                        type: 'number',
+                        description: 'Number of travelers (default 1)',
+                    },
+                    budget: {
+                        type: 'string',
+                        enum: ['budget', 'mid', 'premium'],
+                        description: 'Budget tier (default mid)',
+                    },
+                    interests: {
+                        type: 'array',
+                        items: { type: 'string' },
+                        description: 'Activity interests (e.g. ["beach", "food", "culture"])',
+                    },
+                },
+                required: ['destination'],
+            },
+        },
+    },
 ]
 
 // ─── Name Registry ────────────────────────────────────────────────────────────

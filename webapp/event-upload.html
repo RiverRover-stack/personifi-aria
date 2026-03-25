@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Upload Event</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 15px;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    h1 { font-size: 18px; font-weight: 600; margin-bottom: 20px; }
+    .field { margin-bottom: 14px; }
+    label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; opacity: 0.7; }
+    input[type="text"], input[type="datetime-local"], textarea {
+      width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid;
+      font-size: 15px; outline: none; font-family: inherit;
+    }
+    textarea { resize: vertical; min-height: 80px; }
+    .photo-label {
+      display: flex; align-items: center; justify-content: center;
+      border: 2px dashed; border-radius: 12px; padding: 32px; cursor: pointer;
+      text-align: center; font-size: 14px; opacity: 0.6;
+    }
+    .photo-label.has-file { opacity: 1; }
+    input[type="file"] { display: none; }
+    .btn {
+      width: 100%; padding: 14px; border-radius: 12px; border: none;
+      font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 16px;
+    }
+    .error { color: #e53e3e; font-size: 13px; margin-top: 8px; }
+    .spinner { text-align: center; padding: 20px; opacity: 0.6; }
+    .success-msg { color: #38a169; font-size: 13px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Upload Event</h1>
+
+  <div class="field">
+    <label>Event Name</label>
+    <input type="text" id="event_name" placeholder="e.g. Cultural Night 2026" />
+  </div>
+
+  <div class="field">
+    <label>Venue</label>
+    <input type="text" id="venue" placeholder="e.g. Main Auditorium" />
+  </div>
+
+  <div class="field">
+    <label>Date &amp; Time</label>
+    <input type="datetime-local" id="event_date" />
+  </div>
+
+  <div class="field">
+    <label>Description</label>
+    <textarea id="description" placeholder="Brief description of the event..."></textarea>
+  </div>
+
+  <div class="field">
+    <label>Tags (comma-separated)</label>
+    <input type="text" id="tags" placeholder="e.g. music, food, culture" />
+  </div>
+
+  <div class="field">
+    <label>Event Poster (optional)</label>
+    <label class="photo-label" for="photo_input" id="photo_label">
+      📷 Tap to select poster
+    </label>
+    <input type="file" id="photo_input" accept="image/*" />
+  </div>
+
+  <div id="status-msg" class="error"></div>
+
+  <button class="btn" id="submit-btn">Submit Event</button>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+    tg?.ready();
+    tg?.expand();
+
+    const tp = tg?.themeParams ?? {};
+    document.body.style.backgroundColor = tp.bg_color ?? '#ffffff';
+    document.body.style.color = tp.text_color ?? '#000000';
+    document.querySelectorAll('input, textarea').forEach(el => {
+      el.style.backgroundColor = tp.secondary_bg_color ?? '#f5f5f5';
+      el.style.color = tp.text_color ?? '#000000';
+      el.style.borderColor = tp.hint_color ?? '#cccccc';
+    });
+    document.querySelectorAll('.photo-label').forEach(el => {
+      el.style.borderColor = tp.hint_color ?? '#cccccc';
+    });
+    const btn = document.getElementById('submit-btn');
+    btn.style.backgroundColor = tp.button_color ?? '#0088cc';
+    btn.style.color = tp.button_text_color ?? '#ffffff';
+
+    document.getElementById('photo_input').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        document.getElementById('photo_label').textContent = '✅ ' + file.name;
+        document.getElementById('photo_label').classList.add('has-file');
+      }
+    });
+
+    document.getElementById('submit-btn').addEventListener('click', async () => {
+      const event_name = document.getElementById('event_name').value.trim();
+      const venue = document.getElementById('venue').value.trim();
+      const event_date = document.getElementById('event_date').value;
+      const description = document.getElementById('description').value.trim();
+      const tags = document.getElementById('tags').value.trim();
+      const file = document.getElementById('photo_input').files[0];
+      const statusEl = document.getElementById('status-msg');
+
+      if (!event_name) {
+        statusEl.textContent = 'Event name is required.';
+        statusEl.className = 'error';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Submitting...';
+      statusEl.textContent = '';
+
+      try {
+        const body = {
+          image_base64: file ? await fileToBase64(file) : '',
+          event_name,
+          venue: venue || undefined,
+          event_date: event_date ? new Date(event_date).toISOString() : undefined,
+          description: description || undefined,
+          tags: tags || undefined,
+        };
+
+        const res = await fetch('/admin/upload/event', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-user-id': tg?.initDataUnsafe?.user?.id?.toString() ?? '',
+          },
+          body: JSON.stringify(body),
+        });
+        const json = await res.json();
+
+        if (!json.success) {
+          statusEl.textContent = json.error ?? 'Upload failed.';
+          statusEl.className = 'error';
+          btn.disabled = false;
+          btn.textContent = 'Submit Event';
+          return;
+        }
+
+        tg?.sendData(JSON.stringify({ success: true, ...json.data, event_name, venue, event_date, description, tags }));
+      } catch (err) {
+        statusEl.textContent = 'Network error. Please try again.';
+        statusEl.className = 'error';
+        btn.disabled = false;
+        btn.textContent = 'Submit Event';
+      }
+    });
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+  </script>
+</body>
+</html>

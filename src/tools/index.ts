@@ -25,6 +25,7 @@ import { geocodeAddress, geocodingToolDefinition } from './geocoding.js'
 import { getAirQuality, airQualityToolDefinition } from './air-quality.js'
 import { getPollen, pollenToolDefinition } from './pollen.js'
 import { getTimezone, timezoneToolDefinition } from './timezone.js'
+import { planTripTool, tripPlannerDefinition } from './trip-planner.js'
 import { safeError } from '../utils/safe-log.js'
 import { logger } from '../logger.js'
 
@@ -76,6 +77,8 @@ const bodyHooks: BodyHooks = {
                     return await getPollen(params as any)
                 case 'get_timezone':
                     return await getTimezone(params as any)
+                case 'plan_trip':
+                    return await planTripTool(params)
                 default:
                     return { success: false, data: null, error: `Unknown tool: ${name}` }
             }
@@ -107,6 +110,7 @@ const bodyHooks: BodyHooks = {
             airQualityToolDefinition,
             pollenToolDefinition,
             timezoneToolDefinition,
+            tripPlannerDefinition,
         ]
     },
 }
