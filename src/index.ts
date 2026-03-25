@@ -14,6 +14,7 @@ import { initArchivist } from './archivist/index.js'
 import { initBrowser, closeBrowser } from './browser.js'
 import './tools/index.js'  // Register body hooks (DEV 2 tools)
 import { verifySlackSignature } from './slack-verify.js'
+import { registerOcrRoutes } from './ocr/upload-handler.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import {
   channels,
@@ -34,6 +35,7 @@ declare module 'fastify' {
 const server = Fastify({ logger: true })
 
 await server.register(cors)
+await server.register(registerOcrRoutes)
 
 // Health check with enabled channels
 server.get('/health', async () => ({
