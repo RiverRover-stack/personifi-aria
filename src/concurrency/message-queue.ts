@@ -218,3 +218,12 @@ export function getUserQueueDepth(userId: string): number {
 export function getActiveUserCount(): number {
     return userQueues.size
 }
+
+/**
+ * @internal Test-only — immediately clears all queue entries, preventing the
+ * 5-second grace-period setTimeout from leaking into subsequent test suites.
+ * Never call this in production code.
+ */
+export function __drainQueues(): void {
+    userQueues.clear()
+}
