@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Upload Menu</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 15px;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    h1 { font-size: 18px; font-weight: 600; margin-bottom: 20px; }
+    .field { margin-bottom: 14px; }
+    label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; opacity: 0.7; }
+    input[type="text"], input[type="date"], select {
+      width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid;
+      font-size: 15px; outline: none;
+    }
+    .radio-group { display: flex; gap: 8px; flex-wrap: wrap; }
+    .radio-group label {
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 14px; border-radius: 20px; border: 1px solid;
+      cursor: pointer; font-size: 14px; font-weight: 400; opacity: 1;
+    }
+    .radio-group input[type="radio"] { display: none; }
+    .radio-group input[type="radio"]:checked + span { font-weight: 600; }
+    .photo-label {
+      display: flex; align-items: center; justify-content: center;
+      border: 2px dashed; border-radius: 12px; padding: 32px; cursor: pointer;
+      text-align: center; font-size: 14px; opacity: 0.6;
+    }
+    .photo-label.has-file { opacity: 1; }
+    input[type="file"] { display: none; }
+    #ocr-preview { margin-top: 14px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 8px 6px; border-bottom: 1px solid; text-align: left; }
+    th { font-weight: 600; font-size: 12px; opacity: 0.6; }
+    input[type="text"].cell-input { padding: 4px 6px; font-size: 13px; }
+    input[type="number"].cell-input { padding: 4px 6px; font-size: 13px; width: 70px; }
+    .btn {
+      width: 100%; padding: 14px; border-radius: 12px; border: none;
+      font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 16px;
+    }
+    .error { color: #e53e3e; font-size: 13px; margin-top: 8px; }
+    .spinner { text-align: center; padding: 20px; opacity: 0.6; }
+  </style>
+</head>
+<body>
+  <h1>Upload Mess Menu</h1>
+
+  <div class="field">
+    <label>Hostel Name</label>
+    <input type="text" id="hostel_name" placeholder="e.g. Kaveri Hostel" />
+  </div>
+
+  <div class="field">
+    <label>Meal</label>
+    <div class="radio-group">
+      <label><input type="radio" name="meal_type" value="breakfast" /><span>Breakfast</span></label>
+      <label><input type="radio" name="meal_type" value="lunch" checked /><span>Lunch</span></label>
+      <label><input type="radio" name="meal_type" value="snack" /><span>Snack</span></label>
+      <label><input type="radio" name="meal_type" value="dinner" /><span>Dinner</span></label>
+    </div>
+  </div>
+
+  <div class="field">
+    <label>Date</label>
+    <input type="date" id="menu_date" />
+  </div>
+
+  <div class="field">
+    <label>Menu Photo</label>
+    <label class="photo-label" for="photo_input" id="photo_label">
+      📷 Tap to select photo
+    </label>
+    <input type="file" id="photo_input" accept="image/*" />
+  </div>
+
+  <div id="ocr-preview"></div>
+  <div id="error-msg" class="error"></div>
+
+  <button class="btn" id="confirm-btn" style="display:none">Confirm &amp; Submit</button>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+    tg?.ready();
+    tg?.expand();
+
+    // Apply theme
+    const tp = tg?.themeParams ?? {};
+    document.body.style.backgroundColor = tp.bg_color ?? '#ffffff';
+    document.body.style.color = tp.text_color ?? '#000000';
+    document.querySelectorAll('input, select').forEach(el => {
+      el.style.backgroundColor = tp.secondary_bg_color ?? '#f5f5f5';
+      el.style.color = tp.text_color ?? '#000000';
+      el.style.borderColor = tp.hint_color ?? '#cccccc';
+    });
+    document.querySelectorAll('.radio-group label').forEach(el => {
+      el.style.borderColor = tp.hint_color ?? '#cccccc';
+    });
+    document.querySelectorAll('.photo-label').forEach(el => {
+      el.style.borderColor = tp.hint_color ?? '#cccccc';
+    });
+    document.querySelectorAll('th, td').forEach(el => {
+      el.style.borderColor = tp.hint_color ?? '#eeeeee';
+    });
+    const btn = document.getElementById('confirm-btn');
+    btn.style.backgroundColor = tp.button_color ?? '#0088cc';
+    btn.style.color = tp.button_text_color ?? '#ffffff';
+
+    // Default date to today
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('menu_date').value = today;
+
+    let ocrData = null;
+
+    document.getElementById('photo_input').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      document.getElementById('photo_label').textContent = '✅ ' + file.name;
+      document.getElementById('photo_label').classList.add('has-file');
+      document.getElementById('error-msg').textContent = '';
+      document.getElementById('confirm-btn').style.display = 'none';
+      document.getElementById('ocr-preview').innerHTML = '<div class="spinner">Extracting menu...</div>';
+
+      const hostel = document.getElementById('hostel_name').value.trim();
+      const meal_type = document.querySelector('input[name="meal_type"]:checked')?.value;
+      const menu_date = document.getElementById('menu_date').value;
+
+      if (!hostel || !meal_type || !menu_date) {
+        document.getElementById('ocr-preview').innerHTML = '';
+        document.getElementById('error-msg').textContent = 'Please fill hostel name, meal type, and date first.';
+        return;
+      }
+
+      try {
+        const base64 = await fileToBase64(file);
+        const res = await fetch('/admin/upload/menu', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-user-id': tg?.initDataUnsafe?.user?.id?.toString() ?? '',
+          },
+          body: JSON.stringify({ image_base64: base64, hostel_name: hostel, meal_type, menu_date }),
+        });
+        const json = await res.json();
+
+        if (!json.success) {
+          document.getElementById('ocr-preview').innerHTML = '';
+          document.getElementById('error-msg').textContent = json.error ?? 'OCR failed.';
+          return;
+        }
+
+        ocrData = json.data;
+        renderTable(json.data);
+        document.getElementById('confirm-btn').style.display = 'block';
+      } catch (err) {
+        document.getElementById('ocr-preview').innerHTML = '';
+        document.getElementById('error-msg').textContent = 'Upload failed. Try again.';
+      }
+    });
+
+    function renderTable(items) {
+      if (!items?.length) {
+        document.getElementById('ocr-preview').innerHTML = '<p class="error">No items extracted.</p>';
+        return;
+      }
+      let html = '<table><thead><tr><th>Item</th><th>Price</th><th>Veg</th></tr></thead><tbody>';
+      items.forEach((item, i) => {
+        html += `<tr>
+          <td><input type="text" class="cell-input" data-i="${i}" data-f="name" value="${esc(item.name)}" /></td>
+          <td><input type="number" class="cell-input" data-i="${i}" data-f="price" value="${item.price ?? ''}" step="0.5" /></td>
+          <td><input type="checkbox" data-i="${i}" data-f="veg" ${item.veg ? 'checked' : ''} /></td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+      document.getElementById('ocr-preview').innerHTML = html;
+
+      document.querySelectorAll('.cell-input, input[type="checkbox"]').forEach(el => {
+        el.style.backgroundColor = tp.secondary_bg_color ?? '#f5f5f5';
+        el.style.color = tp.text_color ?? '#000000';
+        el.style.borderColor = tp.hint_color ?? '#cccccc';
+        el.addEventListener('change', syncData);
+      });
+    }
+
+    function syncData(e) {
+      const el = e.target;
+      const i = parseInt(el.dataset.i);
+      const f = el.dataset.f;
+      if (f === 'price') ocrData[i][f] = parseFloat(el.value) || null;
+      else if (f === 'veg') ocrData[i][f] = el.checked;
+      else ocrData[i][f] = el.value;
+    }
+
+    document.getElementById('confirm-btn').addEventListener('click', () => {
+      const hostel = document.getElementById('hostel_name').value.trim();
+      const meal_type = document.querySelector('input[name="meal_type"]:checked')?.value;
+      const menu_date = document.getElementById('menu_date').value;
+      tg?.sendData(JSON.stringify({ success: true, hostel_name: hostel, meal_type, menu_date, items: ocrData }));
+    });
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function esc(str) {
+      return (str ?? '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    }
+  </script>
+</body>
+</html>

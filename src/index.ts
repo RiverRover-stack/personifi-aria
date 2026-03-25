@@ -17,6 +17,7 @@ import { initArchivist } from './archivist/index.js'
 import { initBrowser, closeBrowser } from './browser.js'
 import './tools/index.js'  // Register body hooks (DEV 2 tools)
 import { verifySlackSignature } from './slack-verify.js'
+import { registerOcrRoutes } from './ocr/upload-handler.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -39,6 +40,7 @@ declare module 'fastify' {
 const server = Fastify({ logger: true })
 
 await server.register(cors)
+await server.register(registerOcrRoutes)
 
 // Serve Mini App static files from webapp/ directory
 await server.register(fastifyStatic, {

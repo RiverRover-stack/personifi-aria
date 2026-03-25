@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Plan a Trip</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 15px;
+      min-height: 100vh;
+      padding: 16px 16px 32px;
+    }
+    h1 { font-size: 18px; font-weight: 600; margin-bottom: 20px; }
+    .field { margin-bottom: 14px; position: relative; }
+    label.field-label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; opacity: 0.7; }
+    input[type="text"], input[type="date"] {
+      width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid;
+      font-size: 15px; outline: none;
+    }
+    .row { display: flex; gap: 10px; }
+    .row .field { flex: 1; }
+    /* Traveler stepper */
+    .stepper { display: flex; align-items: center; gap: 0; border-radius: 10px; border: 1px solid; overflow: hidden; }
+    .stepper button {
+      width: 40px; height: 42px; border: none; font-size: 20px; cursor: pointer;
+      background: transparent; flex-shrink: 0;
+    }
+    .stepper input {
+      flex: 1; text-align: center; border: none; font-size: 15px;
+      background: transparent; outline: none; padding: 0;
+    }
+    /* Budget radios */
+    .budget-group { display: flex; gap: 8px; }
+    .budget-group label {
+      flex: 1; text-align: center; padding: 10px 6px; border-radius: 10px; border: 1px solid;
+      cursor: pointer; font-size: 14px; transition: background 0.15s;
+    }
+    .budget-group input[type="radio"] { display: none; }
+    .budget-group input[type="radio"]:checked + span { font-weight: 700; }
+    /* Interest tags */
+    .tag-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    .tag-btn {
+      padding: 7px 14px; border-radius: 20px; border: 1px solid; background: transparent;
+      font-size: 13px; cursor: pointer; transition: background 0.15s;
+    }
+    .tag-btn.selected { font-weight: 600; }
+    /* Autocomplete */
+    .autocomplete-list {
+      position: absolute; z-index: 10; width: 100%; border-radius: 10px;
+      border: 1px solid; max-height: 160px; overflow-y: auto; top: calc(100% + 2px);
+    }
+    .autocomplete-item { padding: 10px 12px; cursor: pointer; font-size: 14px; }
+    /* CTA button */
+    .btn {
+      width: 100%; padding: 14px; border-radius: 12px; border: none;
+      font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 20px;
+    }
+    .error { color: #e53e3e; font-size: 13px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Plan a Trip ✈️</h1>
+
+  <div class="field" id="origin-field">
+    <label class="field-label">From</label>
+    <input type="text" id="origin" placeholder="Your city" autocomplete="off" />
+    <div class="autocomplete-list" id="origin-suggestions" style="display:none"></div>
+  </div>
+
+  <div class="field">
+    <label class="field-label">To</label>
+    <input type="text" id="destination" placeholder="Destination city" />
+  </div>
+
+  <div class="row">
+    <div class="field">
+      <label class="field-label">Departure</label>
+      <input type="date" id="departure_date" />
+    </div>
+    <div class="field">
+      <label class="field-label">Return (optional)</label>
+      <input type="date" id="return_date" />
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="field-label">Travelers</label>
+    <div class="stepper" id="stepper">
+      <button id="dec-btn" type="button">−</button>
+      <input type="number" id="travelers" value="1" min="1" max="8" readonly />
+      <button id="inc-btn" type="button">+</button>
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="field-label">Budget</label>
+    <div class="budget-group">
+      <label><input type="radio" name="budget" value="budget" /><span>Budget</span></label>
+      <label><input type="radio" name="budget" value="mid" checked /><span>Mid</span></label>
+      <label><input type="radio" name="budget" value="premium" /><span>Premium</span></label>
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="field-label">Interests</label>
+    <div class="tag-grid" id="tag-grid">
+      <button class="tag-btn" data-tag="beach" type="button">🏖️ Beach</button>
+      <button class="tag-btn" data-tag="mountains" type="button">⛰️ Mountains</button>
+      <button class="tag-btn" data-tag="food" type="button">🍜 Food</button>
+      <button class="tag-btn" data-tag="nightlife" type="button">🎉 Nightlife</button>
+      <button class="tag-btn" data-tag="culture" type="button">🏛️ Culture</button>
+      <button class="tag-btn" data-tag="adventure" type="button">🧗 Adventure</button>
+      <button class="tag-btn" data-tag="family" type="button">👨‍👩‍👧 Family</button>
+    </div>
+  </div>
+
+  <div id="error-msg" class="error"></div>
+  <button class="btn" id="plan-btn" type="button">Plan Trip</button>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+    tg?.ready();
+    tg?.expand();
+
+    const tp = tg?.themeParams ?? {};
+    const bg = tp.bg_color ?? '#ffffff';
+    const text = tp.text_color ?? '#000000';
+    const secBg = tp.secondary_bg_color ?? '#f5f5f5';
+    const hint = tp.hint_color ?? '#cccccc';
+    const btnColor = tp.button_color ?? '#0088cc';
+    const btnText = tp.button_text_color ?? '#ffffff';
+
+    document.body.style.backgroundColor = bg;
+    document.body.style.color = text;
+
+    document.querySelectorAll('input[type="text"], input[type="date"]').forEach(el => {
+      el.style.backgroundColor = secBg;
+      el.style.color = text;
+      el.style.borderColor = hint;
+    });
+    document.querySelectorAll('.stepper').forEach(el => {
+      el.style.borderColor = hint;
+      el.style.backgroundColor = secBg;
+    });
+    document.querySelectorAll('.stepper button').forEach(el => {
+      el.style.color = text;
+    });
+    document.querySelectorAll('#travelers').forEach(el => {
+      el.style.color = text;
+    });
+    document.querySelectorAll('.budget-group label').forEach(el => {
+      el.style.borderColor = hint;
+      el.style.backgroundColor = secBg;
+    });
+    document.querySelectorAll('.tag-btn').forEach(el => {
+      el.style.borderColor = hint;
+      el.style.color = text;
+    });
+    document.getElementById('autocomplete-list');
+    document.querySelectorAll('.autocomplete-list').forEach(el => {
+      el.style.backgroundColor = bg;
+      el.style.borderColor = hint;
+    });
+    const planBtn = document.getElementById('plan-btn');
+    planBtn.style.backgroundColor = btnColor;
+    planBtn.style.color = btnText;
+
+    // Budget radio styling
+    document.querySelectorAll('.budget-group input[type="radio"]').forEach(radio => {
+      radio.addEventListener('change', () => {
+        document.querySelectorAll('.budget-group label').forEach(lbl => {
+          lbl.style.backgroundColor = secBg;
+        });
+        if (radio.checked) radio.closest('label').style.backgroundColor = btnColor + '33';
+      });
+    });
+    // Init checked state
+    const checkedBudget = document.querySelector('.budget-group input[type="radio"]:checked');
+    if (checkedBudget) checkedBudget.closest('label').style.backgroundColor = btnColor + '33';
+
+    // Tag selection
+    document.querySelectorAll('.tag-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        btn.classList.toggle('selected');
+        if (btn.classList.contains('selected')) {
+          btn.style.backgroundColor = btnColor + '33';
+          btn.style.borderColor = btnColor;
+        } else {
+          btn.style.backgroundColor = 'transparent';
+          btn.style.borderColor = hint;
+        }
+      });
+    });
+
+    // Traveler stepper
+    const travelersInput = document.getElementById('travelers');
+    document.getElementById('dec-btn').addEventListener('click', () => {
+      const v = parseInt(travelersInput.value);
+      if (v > 1) travelersInput.value = v - 1;
+    });
+    document.getElementById('inc-btn').addEventListener('click', () => {
+      const v = parseInt(travelersInput.value);
+      if (v < 8) travelersInput.value = v + 1;
+    });
+
+    // Origin autocomplete from saved locations
+    const originInput = document.getElementById('origin');
+    const suggestionsEl = document.getElementById('origin-suggestions');
+
+    originInput.addEventListener('focus', async () => {
+      try {
+        const userId = tg?.initDataUnsafe?.user?.id;
+        if (!userId) return;
+        const res = await fetch(`/api/user/saved-locations?user_id=${userId}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        const locs = Array.isArray(json.locations) ? json.locations : [];
+        if (locs.length === 0) return;
+        suggestionsEl.innerHTML = locs.map(loc =>
+          `<div class="autocomplete-item" style="background:${bg};color:${text}">${esc(loc)}</div>`
+        ).join('');
+        suggestionsEl.style.display = 'block';
+        suggestionsEl.querySelectorAll('.autocomplete-item').forEach(item => {
+          item.addEventListener('click', () => {
+            originInput.value = item.textContent;
+            suggestionsEl.style.display = 'none';
+          });
+        });
+      } catch {}
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!document.getElementById('origin-field').contains(e.target)) {
+        suggestionsEl.style.display = 'none';
+      }
+    });
+
+    // Default departure to next Saturday
+    const nextSat = (() => {
+      const d = new Date();
+      const day = d.getDay();
+      d.setDate(d.getDate() + ((6 - day + 7) % 7 || 7));
+      return d.toISOString().split('T')[0];
+    })();
+    document.getElementById('departure_date').value = nextSat;
+
+    // Plan trip
+    document.getElementById('plan-btn').addEventListener('click', () => {
+      const destination = document.getElementById('destination').value.trim();
+      if (!destination) {
+        document.getElementById('error-msg').textContent = 'Please enter a destination.';
+        return;
+      }
+      document.getElementById('error-msg').textContent = '';
+
+      const payload = {
+        destination,
+        origin: originInput.value.trim() || undefined,
+        departure_date: document.getElementById('departure_date').value || undefined,
+        return_date: document.getElementById('return_date').value || undefined,
+        travelers: parseInt(travelersInput.value) || 1,
+        budget: document.querySelector('input[name="budget"]:checked')?.value ?? 'mid',
+        interests: [...document.querySelectorAll('.tag-btn.selected')].map(b => b.dataset.tag),
+      };
+
+      tg?.sendData(JSON.stringify(payload));
+    });
+
+    function esc(str) {
+      return (str ?? '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+  </script>
+</body>
+</html>
