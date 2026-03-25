@@ -38,12 +38,13 @@ import { sanitizeInput, logSuspiciousInput, isPotentialAttack } from './sanitize
 import { filterOutput, needsHumanReview } from './output-filter.js'
 import { safeError } from '../utils/safe-log.js'
 
-// DEV 3: The Soul — memory, cognition, personality
+// DEV 3: The Soul — memory, cognition, personality (Fusion refactor: Unit 10)
 import { searchMemories } from '../memory-store.js'
 import { scoredMemorySearch, enqueueMemoryWrite } from '../archivist/index.js'
 import { searchGraph } from '../graph-memory.js'
-import { classifyMessage, getActiveGoal } from '../cognitive.js'
-import { composeSystemPrompt, getRawSoulPrompt } from '../personality.js'
+import { getActiveGoal } from './session-store.js'
+import { composeSystemPrompt, getRawSoulPrompt } from '../alpha/alpha-prompt-builder.js'
+import { isObviouslySimple, getSimpleClassification, getDefaultClassification } from '../utils/tool-coerce.js'
 import { loadPreferences } from '../memory.js'
 import { pulseService } from '../pulse/index.js'
 import { agendaPlanner, isCancellationMessage } from '../agenda-planner/index.js'
@@ -626,32 +627,31 @@ export async function handleMessage(
       }
     }
 
-    // ─── Step 5: Classify message via 8B ──────────────────────────
-    const classification: Awaited<ReturnType<typeof classifyMessage>> = lightweightOnboarding
+    // ─── Step 5: Classify message (Fusion refactor: inline heuristic, no 8B call) ──
+    // The Alpha function-calling pipeline (Step 7+) handles tool routing.
+    // Here we only need simple/complex discrimination and cognitive defaults.
+    const classification = lightweightOnboarding
       ? {
-        message_complexity: 'simple',
+        message_complexity: 'simple' as const,
         needs_tool: false,
         tool_hint: null,
         tool_args: {},
         skip_memory: true,
         skip_graph: true,
         skip_cognitive: true,
-        userSignal: 'normal',
+        userSignal: 'normal' as const,
         detected_topic: null,
-        interest_signal: 'neutral',
+        interest_signal: 'neutral' as const,
         cognitiveState: {
           internalMonologue: 'Onboarding step active. Keep response concise and advance exactly one onboarding step.',
-          emotionalState: 'curious',
-          conversationGoal: 'clarify',
-          relevantMemories: [],
+          emotionalState: 'curious' as const,
+          conversationGoal: 'clarify' as const,
+          relevantMemories: [] as string[],
         },
       }
-      : await classifyMessage(
-        userMessage,
-        session.messages.slice(-4),
-        user.userId,
-        user.homeLocation ?? undefined,
-      )
+      : isObviouslySimple(userMessage.trim().toLowerCase())
+          ? getSimpleClassification()
+          : getDefaultClassification()
 
     if (!lightweightOnboarding) {
       log.info({

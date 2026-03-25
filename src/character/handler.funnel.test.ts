@@ -41,6 +41,9 @@ vi.mock('./session-store.js', () => ({
   checkRateLimit: checkRateLimitMock,
   trackUsage: vi.fn(),
   getPool: vi.fn(() => ({})),
+  // Unit 10: goal helpers moved from cognitive.js → session-store.js
+  getActiveGoal: vi.fn(async () => null),
+  updateConversationGoal: vi.fn(async () => undefined),
 }))
 
 vi.mock('./sanitize.js', () => ({
@@ -64,13 +67,13 @@ vi.mock('../graph-memory.js', () => ({
   addToGraph: vi.fn(async () => undefined),
 }))
 
-vi.mock('../cognitive.js', () => ({
-  classifyMessage: classifyMessageMock,
-  getActiveGoal: vi.fn(async () => null),
-  updateConversationGoal: vi.fn(async () => undefined),
+vi.mock('../utils/tool-coerce.js', () => ({
+  isObviouslySimple: vi.fn(() => false),
+  getSimpleClassification: classifyMessageMock,
+  getDefaultClassification: classifyMessageMock,
 }))
 
-vi.mock('../personality.js', () => ({
+vi.mock('../alpha/alpha-prompt-builder.js', () => ({
   composeSystemPrompt: vi.fn(() => 'SYSTEM_PROMPT'),
   getRawSoulPrompt: vi.fn(() => 'RAW_SOUL'),
 }))
@@ -91,6 +94,12 @@ vi.mock('../hook-registry.js', () => ({
     routeMessage: routeMessageMock,
     executeToolPipeline: executeToolPipelineMock,
     formatResponse: vi.fn((raw: string) => raw),
+  })),
+  registerBrainHooks: vi.fn(),
+  registerBodyHooks: vi.fn(),
+  getBodyHooks: vi.fn(() => ({
+    executeTool: vi.fn(async () => ({ success: true, data: null })),
+    getAvailableTools: vi.fn(() => []),
   })),
 }))
 

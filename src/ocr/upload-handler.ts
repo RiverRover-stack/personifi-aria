@@ -5,12 +5,14 @@
  *   POST /admin/upload/menu   — accepts JSON { image_base64, hostel_name, meal_type, menu_date }
  *   POST /admin/upload/event  — accepts JSON { image_base64, event_name, venue, event_date, description, tags }
  *
- * Auth: user must have role='mess_admin' OR hostel_name match.
- * Both routes call the OCR engine and persist results to DB.
+ * Auth: caller must send X-Telegram-Init-Data header (HMAC-SHA256 signed by Telegram).
+ * The validated Telegram user ID is resolved to an internal UUID via getOrCreateUser().
+ * User must have role='mess_admin' OR (for menu upload) hostel_name match.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
-import { getPool } from '../character/session-store.js'
+import { getPool, getOrCreateUser } from '../character/session-store.js'
+import { validateInitData } from '../telegram/webapp-validation.js'
 import { parseMenuPhoto, parseEventPhoto } from './index.js'
 import { logger as rootLogger } from '../logger.js'
 
@@ -23,7 +25,6 @@ interface MenuUploadBody {
     hostel_name: string
     meal_type: 'breakfast' | 'lunch' | 'snack' | 'dinner'
     menu_date: string  // YYYY-MM-DD
-    user_id: string    // injected by auth check
 }
 
 interface EventUploadBody {
@@ -33,31 +34,58 @@ interface EventUploadBody {
     event_date?: string  // ISO 8601
     description?: string
     tags?: string | string[]  // comma-separated string OR array
-    user_id: string
 }
 
 // ─── Auth helper ─────────────────────────────────────────────────────────────
 
-async function assertAdminAccess(
-    userId: string,
-    hostelName: string,
-    reply: FastifyReply
-): Promise<{ user_id: string; role: string; hostel_name: string | null } | null> {
+/**
+ * Validates the Telegram initData from the X-Telegram-Init-Data request header.
+ * Returns the internal user UUID on success, or sends 401/403 and returns null.
+ */
+async function resolveAdminUser(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    hostelName: string | null,
+): Promise<{ userId: string; role: string | null; hostel_name: string | null } | null> {
+    const botToken = process.env.TELEGRAM_BOT_TOKEN
+    if (!botToken) {
+        log.error('TELEGRAM_BOT_TOKEN not configured — OCR upload auth unavailable')
+        reply.code(503).send({ success: false, error: 'Auth service unavailable' })
+        return null
+    }
+
+    const initDataStr = request.headers['x-telegram-init-data'] as string | undefined
+    if (!initDataStr) {
+        reply.code(401).send({ success: false, error: 'Missing X-Telegram-Init-Data header' })
+        return null
+    }
+
+    const { valid, data } = validateInitData(initDataStr, botToken)
+    if (!valid || !data?.user?.id) {
+        reply.code(401).send({ success: false, error: 'Invalid Telegram auth token' })
+        return null
+    }
+
+    const telegramUserId = String(data.user.id)
+    const internalUser = await getOrCreateUser('telegram', telegramUserId)
+
+    // Fetch role and hostel_name from users table (added in migration 010)
     const pool = getPool()
-    const { rows } = await pool.query<{ user_id: string; role: string; hostel_name: string | null }>(
-        `SELECT user_id, role, hostel_name FROM users WHERE user_id = $1 LIMIT 1`,
-        [userId]
+    const { rows } = await pool.query<{ role: string | null; hostel_name: string | null }>(
+        `SELECT role, hostel_name FROM users WHERE user_id = $1 LIMIT 1`,
+        [internalUser.userId]
     )
-    const user = rows[0]
-    if (!user) {
-        reply.code(403).send({ success: false, error: 'Forbidden' })
+    const dbUser = rows[0] ?? { role: null, hostel_name: null }
+
+    const isAdmin = dbUser.role === 'mess_admin'
+    const hostelMatch = hostelName !== null && dbUser.hostel_name === hostelName
+
+    if (!isAdmin && !hostelMatch) {
+        reply.code(403).send({ success: false, error: 'Forbidden: mess_admin role or matching hostel required' })
         return null
     }
-    if (user.role !== 'mess_admin' && user.hostel_name !== hostelName) {
-        reply.code(403).send({ success: false, error: 'Forbidden' })
-        return null
-    }
-    return user
+
+    return { userId: internalUser.userId, ...dbUser }
 }
 
 // ─── Plugin ───────────────────────────────────────────────────────────────────
@@ -72,13 +100,7 @@ export async function registerOcrRoutes(fastify: FastifyInstance): Promise<void>
             return reply.code(400).send({ success: false, error: 'Missing required fields: image_base64, hostel_name, meal_type, menu_date' })
         }
 
-        // Extract user_id from session header (X-User-Id) or body
-        const userId: string = (request.headers['x-user-id'] as string) || request.body?.user_id
-        if (!userId) {
-            return reply.code(401).send({ success: false, error: 'Unauthorized' })
-        }
-
-        const user = await assertAdminAccess(userId, hostel_name, reply)
+        const user = await resolveAdminUser(request, reply, hostel_name)
         if (!user) return
 
         const imageBuffer = Buffer.from(image_base64, 'base64')
@@ -95,7 +117,7 @@ export async function registerOcrRoutes(fastify: FastifyInstance): Promise<void>
              VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (hostel_name, meal_type, menu_date)
              DO UPDATE SET items = $5, raw_ocr_text = $6, verified = false`,
-            [userId, hostel_name, meal_type, menu_date, JSON.stringify(result.data), result.raw_text]
+            [user.userId, hostel_name, meal_type, menu_date, JSON.stringify(result.data), result.raw_text]
         )
 
         log.info({ hostel_name, meal_type, menu_date, items: result.data?.length }, 'Menu uploaded')
@@ -110,19 +132,11 @@ export async function registerOcrRoutes(fastify: FastifyInstance): Promise<void>
             return reply.code(400).send({ success: false, error: 'Missing required field: image_base64' })
         }
 
-        const userId: string = (request.headers['x-user-id'] as string) || request.body?.user_id
-        if (!userId) {
-            return reply.code(401).send({ success: false, error: 'Unauthorized' })
-        }
-
-        // For events, require mess_admin only (no hostel match check)
-        const pool = getPool()
-        const { rows } = await pool.query<{ role: string }>(
-            `SELECT role FROM users WHERE user_id = $1 LIMIT 1`,
-            [userId]
-        )
-        if (!rows[0] || rows[0].role !== 'mess_admin') {
-            return reply.code(403).send({ success: false, error: 'Forbidden' })
+        // For events, require mess_admin role only (no hostel match fallback)
+        const user = await resolveAdminUser(request, reply, null)
+        if (!user) return
+        if (user.role !== 'mess_admin') {
+            return reply.code(403).send({ success: false, error: 'Forbidden: mess_admin role required for event upload' })
         }
 
         const imageBuffer = Buffer.from(image_base64, 'base64')
@@ -137,11 +151,12 @@ export async function registerOcrRoutes(fastify: FastifyInstance): Promise<void>
         const eventData = result.data!
         const finalTags: string[] = parseTags(rawTags) ?? eventData.tags ?? []
 
+        const pool = getPool()
         await pool.query(
             `INSERT INTO local_events (uploaded_by, event_name, venue, event_date, description, tags, raw_ocr_text)
              VALUES ($1, $2, $3, $4, $5, $6, $7)`,
             [
-                userId,
+                user.userId,
                 event_name || eventData.event_name,
                 venue || eventData.venue,
                 event_date || eventData.event_date,

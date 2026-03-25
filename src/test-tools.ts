@@ -275,11 +275,13 @@ async function runAgentTests(): Promise<{ passed: number; failed: number }> {
 
     const tests: AgentTest[] = [
         {
-            name: '8B Classifier (cognitive.ts)',
+            name: 'Inline Classifier (utils/tool-coerce.ts)',
             fn: async () => {
-                const mod = await import('./cognitive.js')
-                if (typeof mod.classifyMessage !== 'function') throw new Error('classifyMessage not exported')
-                return 'classifyMessage() exported ✓'
+                const { isObviouslySimple, getSimpleClassification, getDefaultClassification } = await import('./utils/tool-coerce.js')
+                if (typeof isObviouslySimple !== 'function') throw new Error('isObviouslySimple not exported')
+                if (typeof getSimpleClassification !== 'function') throw new Error('getSimpleClassification not exported')
+                if (typeof getDefaultClassification !== 'function') throw new Error('getDefaultClassification not exported')
+                return 'inline classifier helpers exported ✓'
             },
         },
         {
@@ -301,9 +303,9 @@ async function runAgentTests(): Promise<{ passed: number; failed: number }> {
             },
         },
         {
-            name: 'Personality Composer',
+            name: 'Alpha Prompt Builder',
             fn: async () => {
-                const { composeSystemPrompt, getRawSoulPrompt } = await import('./personality.js')
+                const { composeSystemPrompt, getRawSoulPrompt } = await import('./alpha/alpha-prompt-builder.js')
                 if (typeof composeSystemPrompt !== 'function') throw new Error('composeSystemPrompt missing')
                 const soul = getRawSoulPrompt()
                 return `composeSystemPrompt() exported, SOUL loaded (${soul.length} chars) ✓`

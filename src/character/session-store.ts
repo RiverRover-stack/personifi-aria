@@ -343,6 +343,44 @@ export async function runMigrations(): Promise<void> {
     END $$
   `)
 
+  // ── Phase 5 — OCR admin columns on users (Issue #135) ────────────────────
+  await p.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'`)
+  await p.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS hostel_name TEXT`)
+
+  // ── Phase 5 — OCR tables: mess_menus + local_events (Issue #135) ─────────
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS mess_menus (
+      id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      uploaded_by  UUID        REFERENCES users(user_id) ON DELETE SET NULL,
+      hostel_name  TEXT        NOT NULL,
+      meal_type    TEXT        NOT NULL CHECK (meal_type IN ('breakfast','lunch','snack','dinner')),
+      menu_date    DATE        NOT NULL,
+      items        JSONB       NOT NULL DEFAULT '[]',
+      raw_ocr_text TEXT,
+      image_url    TEXT,
+      verified     BOOLEAN     DEFAULT false,
+      created_at   TIMESTAMPTZ DEFAULT NOW(),
+      CONSTRAINT unique_menu UNIQUE (hostel_name, meal_type, menu_date)
+    )
+  `)
+
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS local_events (
+      id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+      uploaded_by  UUID        REFERENCES users(user_id) ON DELETE SET NULL,
+      event_name   TEXT        NOT NULL,
+      venue        TEXT,
+      event_date   TIMESTAMPTZ,
+      description  TEXT,
+      tags         TEXT[]      DEFAULT '{}',
+      image_url    TEXT,
+      raw_ocr_text TEXT,
+      created_at   TIMESTAMPTZ DEFAULT NOW()
+    )
+  `)
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_local_events_tags ON local_events USING GIN (tags)`)
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_local_events_date ON local_events(event_date)`)
+
   log.info('Migrations complete')
 }
 
@@ -553,7 +591,83 @@ export async function cleanupExpiredRateLimits(): Promise<number> {
   return result.rowCount ?? 0
 }
 
-// Cleanup
+// ─── Conversation Goals (migrated from cognitive.ts — Unit 10) ───────────────
+
+import type { ConversationGoalRecord } from '../types/cognitive.js'
+
+const goalLog = logger.child({ module: 'session-store/goals' })
+
+/**
+ * Persist or update the active conversation goal for a session.
+ * Uses an atomic UPSERT on the unique (user_id, session_id) constraint.
+ * Passing null/empty marks the current goal as completed.
+ */
+export async function updateConversationGoal(
+    userId: string,
+    sessionId: string,
+    newGoal: string | null,
+    context: Record<string, unknown> = {}
+): Promise<ConversationGoalRecord | null> {
+    const db = getPool()
+    try {
+        if (!newGoal || newGoal.trim() === '') {
+            await db.query(
+                `UPDATE conversation_goals
+                 SET status = 'completed', updated_at = NOW()
+                 WHERE user_id = $1 AND session_id = $2
+                   AND status = 'active'
+                   AND COALESCE(source, 'classifier') = 'classifier'`,
+                [userId, sessionId]
+            )
+            return null
+        }
+        const result = await db.query<ConversationGoalRecord>(
+            `INSERT INTO conversation_goals
+               (user_id, session_id, goal, status, context, goal_type, priority, source)
+             VALUES ($1, $2, $3, 'active', $4, 'general', 5, 'classifier')
+             ON CONFLICT ON CONSTRAINT conversation_goals_user_session_unique
+             DO UPDATE SET
+               goal       = EXCLUDED.goal,
+               context    = EXCLUDED.context,
+               source     = 'classifier',
+               updated_at = NOW()
+             RETURNING *`,
+            [userId, sessionId, newGoal.trim(), JSON.stringify(context)]
+        )
+        return result.rows[0] ?? null
+    } catch (err) {
+        goalLog.error({ err }, 'Goal update failed')
+        return null
+    }
+}
+
+/**
+ * Get the current active conversation goal for a session.
+ */
+export async function getActiveGoal(
+    userId: string,
+    sessionId: string
+): Promise<ConversationGoalRecord | null> {
+    const db = getPool()
+    try {
+        const result = await db.query<ConversationGoalRecord>(
+            `SELECT * FROM conversation_goals
+             WHERE user_id = $1 AND session_id = $2 AND status = 'active'
+             ORDER BY
+               CASE WHEN COALESCE(source, 'classifier') = 'classifier' THEN 0 ELSE 1 END,
+               updated_at DESC
+             LIMIT 1`,
+            [userId, sessionId]
+        )
+        return result.rows[0] ?? null
+    } catch (err) {
+        goalLog.error({ err }, 'Goal fetch failed')
+        return null
+    }
+}
+
+// ─── Cleanup ──────────────────────────────────────────────────────────────────
+
 export async function closeDatabase(): Promise<void> {
   if (pool) {
     await pool.end()

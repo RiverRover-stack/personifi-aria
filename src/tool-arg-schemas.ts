@@ -56,6 +56,16 @@ const SCHEMAS: Record<string, z.ZodType> = {
         message: z.string().min(1),
         time:    z.string().min(1),
     }),
+
+    plan_trip: z.object({
+        destination:    z.string().min(1),
+        origin:         z.string().optional(),
+        departure_date: z.string().optional(),
+        return_date:    z.string().optional(),
+        travelers:      z.number().int().min(1).optional(),
+        budget:         z.enum(['budget', 'mid', 'premium']).optional(),
+        interests:      z.array(z.string()).optional(),
+    }),
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────────

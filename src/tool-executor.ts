@@ -26,14 +26,15 @@ const log = rootLogger.child({ module: 'tool-executor' })
  * event_lookup uses search_places with an event type hint injected below.
  */
 const ALPHA_TO_LEGACY: Record<string, string> = {
-    cab_compare: 'compare_rides',
-    place_search: 'search_places',
-    weather_check: 'get_weather',
-    food_finder: 'compare_food_prices',
-    price_alert: 'compare_prices_proactive',
-    event_lookup: 'search_places',       // args get a type:'event' injection
+    cab_compare:     'compare_rides',
+    place_search:    'search_places',
+    weather_check:   'get_weather',
+    food_finder:     'compare_food_prices',
+    price_alert:     'compare_prices_proactive',
+    event_lookup:    'search_places',    // args get a type:'event' injection
     friend_activity: '__stub__',         // full impl in Phase 3
-    set_reminder: '__stub__',            // full impl in Phase 3
+    set_reminder:    '__stub__',         // full impl in Phase 3
+    plan_trip:       'plan_trip',        // composite tool — Phase 5
 }
 
 // ─── Executor ─────────────────────────────────────────────────────────────────
@@ -87,6 +88,9 @@ export async function executeAlphaTool(
         resolvedArgs = { ...rest, origin: pickup }
     } else if (name === 'event_lookup') {
         resolvedArgs = { ...args, query: `events: ${args.query ?? ''}`.trim(), openNow: false }
+    } else if (name === 'plan_trip') {
+        // inject _userId so planTripTool can persist the trip and schedule follow-ups
+        resolvedArgs = { ...args, _userId: userId }
     }
 
     log.debug({ tool: name, legacyTool: legacyName }, 'routing through sandbox')

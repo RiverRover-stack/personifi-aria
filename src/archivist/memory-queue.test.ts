@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../character/session-store.js', () => ({
     getPool: () => ({ query: mocks.query }),
+    // Unit 10: updateConversationGoal moved here from cognitive.js
+    updateConversationGoal: mocks.updateGoal,
 }))
 
 vi.mock('../memory-store.js', () => ({
@@ -36,10 +38,6 @@ vi.mock('../graph-memory.js', () => ({
 
 vi.mock('../memory.js', () => ({
     processUserMessage: mocks.processUser,
-}))
-
-vi.mock('../cognitive.js', () => ({
-    updateConversationGoal: mocks.updateGoal,
 }))
 
 // Import AFTER vi.mock declarations

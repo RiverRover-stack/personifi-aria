@@ -16,7 +16,7 @@ import { getPool } from '../character/session-store.js'
 import { addMemories } from '../memory-store.js'
 import { addToGraph } from '../graph-memory.js'
 import { processUserMessage } from '../memory.js'
-import { updateConversationGoal } from '../cognitive.js'
+import { updateConversationGoal } from '../character/session-store.js'
 import { logger } from '../logger.js'
 
 const log = logger.child({ module: 'memory-queue' })

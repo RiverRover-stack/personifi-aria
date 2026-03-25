@@ -24,6 +24,6 @@ export type {
   ToolDefinition,
 } from '../hooks.js'
 
-// Classifier
-export { classifyMessage } from '../cognitive.js'
+// Classifier helpers (Unit 10: 8B call removed, replaced by inline heuristics)
+export { isObviouslySimple, getSimpleClassification, getDefaultClassification } from '../utils/tool-coerce.js'
 export type { ClassifierResult, MessageComplexity } from '../types/cognitive.js'

@@ -59,8 +59,8 @@ function validateToolSchema(tool: (typeof ALPHA_TOOL_DEFINITIONS)[number]): stri
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('ALPHA_TOOL_DEFINITIONS — schema validation', () => {
-    it('exports exactly 8 tool definitions', () => {
-        expect(ALPHA_TOOL_DEFINITIONS).toHaveLength(8)
+    it('exports exactly 9 tool definitions', () => {
+        expect(ALPHA_TOOL_DEFINITIONS).toHaveLength(9)
     })
 
     it('has no duplicate tool names', () => {
@@ -79,7 +79,7 @@ describe('ALPHA_TOOL_DEFINITIONS — schema validation', () => {
         expect(errors).toEqual([])
     })
 
-    it('contains all 8 expected tool names', () => {
+    it('contains all 9 expected tool names', () => {
         const expected = [
             'cab_compare',
             'place_search',
@@ -89,6 +89,7 @@ describe('ALPHA_TOOL_DEFINITIONS — schema validation', () => {
             'event_lookup',
             'friend_activity',
             'set_reminder',
+            'plan_trip',
         ]
         for (const name of expected) {
             expect(ALPHA_TOOL_NAMES.has(name)).toBe(true)
