@@ -8,10 +8,26 @@
 
 import type { Pool } from 'pg'
 import type { SentinelUserContext, SentinelMode } from './types.js'
+import { loadPreferences } from '../memory.js'
+import { logger as rootLogger } from '../logger.js'
+
+const log = rootLogger.child({ module: 'sentinel/state-store' })
+
+// 5-minute TTL cache for hydrated preferences — keyed by userId, never cross-user
+const prefCache = new Map<string, { prefs: Record<string, string>; expiresAt: number }>()
+
+/** Evict expired preference cache entries to prevent unbounded growth at scale */
+function evictPrefCache(): void {
+    const now = Date.now()
+    for (const [userId, entry] of prefCache) {
+        if (entry.expiresAt <= now) prefCache.delete(userId)
+    }
+}
 
 interface SentinelUserRow {
     user_id: string
     chat_id: string
+    display_name: string | null
     pulse_score: string
     pulse_state: string
     sentinel_mode: string | null
@@ -20,17 +36,23 @@ interface SentinelUserRow {
     last_reset_date: string | null
     pushback_count: string
     consecutive_positive: string
+    /** Epoch seconds of user's most recent session message — NULL if no session yet */
+    last_active_epoch: string | null
 }
 
 /**
  * Load all onboarded users with their full Sentinel context.
  * Only users who have a proactive_user_state row (i.e., chat_id known) are returned.
+ *
+ * lastActiveAt is pulled from the user's most recently active session so the
+ * decision engine can suppress FIRE during active conversations.
  */
 export async function loadSentinelUsersWithContext(pool: Pool): Promise<SentinelUserContext[]> {
     const { rows } = await pool.query<SentinelUserRow>(`
         SELECT
             u.user_id,
             pus.chat_id,
+            u.display_name,
             COALESCE(pes.engagement_score, 30)::text              AS pulse_score,
             COALESCE(pes.current_state,    'CURIOUS')             AS pulse_state,
             pus.sentinel_mode,
@@ -38,7 +60,12 @@ export async function loadSentinelUsersWithContext(pool: Pool): Promise<Sentinel
             EXTRACT(EPOCH FROM pus.last_sent_at)::text            AS last_fire_at,
             TO_CHAR(pus.last_reset_date, 'YYYY-MM-DD')            AS last_reset_date,
             COALESCE(pus.pushback_count, 0)::text                 AS pushback_count,
-            COALESCE(pus.consecutive_positive, 0)::text           AS consecutive_positive
+            COALESCE(pus.consecutive_positive, 0)::text           AS consecutive_positive,
+            EXTRACT(EPOCH FROM (
+                SELECT MAX(s.last_active)
+                FROM sessions s
+                WHERE s.user_id = u.user_id
+            ))::text AS last_active_epoch
         FROM users u
         INNER JOIN proactive_user_state pus ON pus.user_id = u.user_id
         LEFT  JOIN pulse_engagement_scores pes ON pes.user_id = u.user_id
@@ -46,9 +73,10 @@ export async function loadSentinelUsersWithContext(pool: Pool): Promise<Sentinel
           AND u.onboarding_complete = TRUE
     `)
 
-    return rows.map(row => ({
+    const baseUsers = rows.map(row => ({
         userId:              row.user_id,
         chatId:              row.chat_id,
+        displayName:         row.display_name ?? null,
         pulseState:          (row.pulse_state as SentinelUserContext['pulseState']) ?? 'CURIOUS',
         pulseScore:          Number(row.pulse_score) || 30,
         mode:                (row.sentinel_mode as SentinelMode) ?? 'REACTIVE',
@@ -58,7 +86,29 @@ export async function loadSentinelUsersWithContext(pool: Pool): Promise<Sentinel
         pushbackCount:       Number(row.pushback_count) || 0,
         consecutivePositive: Number(row.consecutive_positive) || 0,
         preferences:         {},
+        lastActiveAt:        row.last_active_epoch ? Number(row.last_active_epoch) * 1000 : 0,
     }))
+
+    // Hydrate preferences for all users in parallel (5-min TTL cache)
+    const now = Date.now()
+    await Promise.all(baseUsers.map(async user => {
+        const cached = prefCache.get(user.userId)
+        if (cached && cached.expiresAt > now) {
+            user.preferences = cached.prefs
+            return
+        }
+        try {
+            const prefs = await loadPreferences(pool, user.userId)
+            const prefCount = Object.keys(prefs).length
+            log.debug({ userId: user.userId, prefCount }, 'Hydrated preferences')
+            user.preferences = prefs as Record<string, string>
+            prefCache.set(user.userId, { prefs: user.preferences, expiresAt: now + 5 * 60 * 1000 })
+        } catch (err) {
+            log.warn({ userId: user.userId, err }, 'Failed to hydrate preferences')
+        }
+    }))
+
+    return baseUsers
 }
 
 /** Persist the Sentinel mode (PROACTIVE / REACTIVE) for a user */
@@ -123,5 +173,28 @@ export async function recordPushbackDB(pool: Pool, userId: string): Promise<void
              updated_at           = NOW()
          WHERE user_id = $1`,
         [userId]
+    )
+}
+
+/**
+ * Ensure a proactive_user_state row exists for the user.
+ * Called after onboarding completes so Sentinel can process them.
+ * Idempotent — safe to call on every authenticated message.
+ *
+ * @param chatId  The Telegram chat ID for sending proactive messages
+ */
+export async function ensureProactiveUserState(
+    pool: Pool,
+    userId: string,
+    chatId: string,
+): Promise<void> {
+    await pool.query(
+        `INSERT INTO proactive_user_state (user_id, chat_id, sentinel_mode)
+         VALUES ($1, $2, 'REACTIVE')
+         ON CONFLICT (user_id) DO UPDATE
+             SET chat_id    = EXCLUDED.chat_id,
+                 updated_at = NOW()
+         WHERE proactive_user_state.chat_id IS DISTINCT FROM EXCLUDED.chat_id`,
+        [userId, chatId],
     )
 }

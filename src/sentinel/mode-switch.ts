@@ -46,15 +46,47 @@ export function evaluateModeSwitch(
         return { newMode: 'REACTIVE', changed: true, alert }
     }
 
-    // REACTIVE → PROACTIVE: recovery requires 3 positive interactions + softer threshold (42.5)
+    // REACTIVE → PROACTIVE: two recovery paths
+    //
+    // Path A (standard): 3+ positive proactive interactions + score ≥ 42.5
+    //   Used when the user has been engaging with proactive messages.
+    //
+    // Path B (pulse-based, anti-deadlock): pulse score ≥ 75 AND pulse state ENGAGED+
+    //   Used when the user is actively and happily chatting (reactive conversations
+    //   push pulse up) but consecutive_positive is stuck at 0 because REACTIVE mode
+    //   prevents FIRE — which prevents recordPositiveInteractionDB from being called.
+    //   Without Path B, recovery is mathematically impossible once stuck in REACTIVE.
     if (mode === 'REACTIVE') {
-        const softThreshold = MODE_THRESHOLD * RECOVERY_THRESHOLD_MULTIPLIER
+        const softThreshold = MODE_THRESHOLD * RECOVERY_THRESHOLD_MULTIPLIER  // 42.5
+
+        // Path A: traditional positive streak recovery
         if (
             consecutivePositive >= REACTIVE_TO_PROACTIVE_POSITIVE_REQUIRED &&
             pulseScore >= softThreshold
         ) {
-            return { newMode: 'PROACTIVE', changed: true, alert }
+            return {
+                newMode: 'PROACTIVE',
+                changed: true,
+                alert:   `Recovery (Path A): ${consecutivePositive} positive interactions, score=${pulseScore}`,
+            }
         }
+
+        // Path B: high pulse score indicates healthy engagement — auto-recover
+        // Threshold: score ≥ 75 (ENGAGED state starts around 50, PROACTIVE at 80).
+        // Only applies when the user is demonstrably active (ENGAGED or PROACTIVE pulse).
+        const pulseBasedRecovery =
+            pulseScore >= 75 &&
+            (pulseState === 'ENGAGED' || pulseState === 'PROACTIVE') &&
+            ctx.pushbackCount === 0  // don't recover if there are outstanding pushbacks
+
+        if (pulseBasedRecovery) {
+            return {
+                newMode: 'PROACTIVE',
+                changed: true,
+                alert:   `Recovery (Path B): pulse=${pulseScore} ${pulseState} with no pushbacks — auto-recovering from REACTIVE`,
+            }
+        }
+
         return { newMode: 'REACTIVE', changed: false, alert }
     }
 

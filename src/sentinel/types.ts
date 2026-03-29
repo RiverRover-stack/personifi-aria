@@ -26,6 +26,8 @@ export interface SentinelUserContext {
     userId: string
     /** Telegram chat ID for delivery */
     chatId: string
+    /** User display name (for Alpha proactive generation) */
+    displayName: string | null
     pulseState: EngagementState
     pulseScore: number
     mode: SentinelMode
@@ -38,6 +40,12 @@ export interface SentinelUserContext {
     pushbackCount: number
     consecutivePositive: number
     preferences: Record<string, string>
+    /**
+     * Epoch ms of the user's most recent message.
+     * Used to detect active sessions: do NOT FIRE if user messaged within 10 minutes.
+     * Loaded from sessions.last_active JOIN.
+     */
+    lastActiveAt: number
 }
 
 /** A stimulus that has been scored against user context */

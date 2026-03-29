@@ -21,6 +21,8 @@ import {
     incrementDailyFire,
     resetDailyCountsIfNeeded,
     saveSentinelMode,
+    recordPushbackDB,
+    recordPositiveInteractionDB,
 } from './state-store.js'
 import {
     collectStimulusRefresh,
@@ -29,8 +31,11 @@ import {
     collectContentScan,
     collectMessMenu,
     collectLocalEvents,
+    collectPlanReminders,
+    collectInterestIntents,
     runMemoryProcess,
     runSessionCleanup,
+    runSessionPruner,
 } from './collectors.js'
 import { applySocialOverlay } from './social-overlay.js'
 import { decideSentinelActions } from './decision-engine.js'
@@ -49,6 +54,13 @@ const log = logger.child({ module: 'sentinel' })
 
 let tickCount = 0
 let intervalHandle: ReturnType<typeof setInterval> | null = null
+
+/**
+ * In-memory map of each user's pulse state from the PREVIOUS tick.
+ * Used to detect state transitions (e.g. ENGAGED → CURIOUS) for alerts.
+ * Single-process safe; resets on restart (acceptable — only used for alerting).
+ */
+const previousPulseStates = new Map<string, import('../pulse/types.js').EngagementState>()
 
 /** Current date in IST (YYYY-MM-DD) for daily reset checks */
 function getCurrentDateIST(): string {
@@ -89,6 +101,10 @@ export async function sentinelTick(): Promise<SentinelTickResult> {
         if (tickCount % 60 === 0) {
             await runFusionTableCleanup(pool).catch(err => log.error({ err }, 'Fusion table cleanup error'))
         }
+        // Weekly digest compilation + session prune (every 10080 ticks = 7 days)
+        if (tickCount % COLLECTOR_INTERVALS.session_pruner === 0) {
+            await runSessionPruner().catch(err => log.error({ err }, 'Session pruner error'))
+        }
 
         // ── User phase ────────────────────────────────────────────────────────
         const users = await loadSentinelUsersWithContext(pool)
@@ -127,7 +143,10 @@ async function processUser(ctx: SentinelUserContext, pool: Pool, result: Sentine
     await resetDailyCountsIfNeeded(pool, ctx.userId, getCurrentDateIST())
 
     // 2. Evaluate mode switch (PROACTIVE ↔ REACTIVE)
-    const modeResult = evaluateModeSwitch(ctx)
+    // Pass the previous tick's pulse state so ENGAGED→CURIOUS drops are detected.
+    const prevPulseState = previousPulseStates.get(ctx.userId)
+    const modeResult = evaluateModeSwitch(ctx, prevPulseState)
+    previousPulseStates.set(ctx.userId, ctx.pulseState)
     if (modeResult.changed) {
         ctx.mode = modeResult.newMode
         await saveSentinelMode(pool, ctx.userId, modeResult.newMode)
@@ -151,6 +170,8 @@ async function processUser(ctx: SentinelUserContext, pool: Pool, result: Sentine
         { key: 'content_scan',     category: 'content_scan',     fn: collectContentScan },
         { key: 'mess_menu',        category: 'mess_menu',        fn: collectMessMenu },
         { key: 'local_event',      category: 'local_event',      fn: collectLocalEvents },
+        { key: 'plan_reminder',    category: 'topic_followup',   fn: collectPlanReminders },
+        { key: 'interest_intent',  category: 'topic_followup',   fn: collectInterestIntents },
     ]
 
     for (const { key, category, fn } of collectorMap) {
@@ -190,7 +211,7 @@ async function processUser(ctx: SentinelUserContext, pool: Pool, result: Sentine
     // 5. Decide actions
     const decisions = decideSentinelActions(stimuli, ctx)
 
-    // 6. Execute decisions
+    // 6. Execute decisions and persist engagement state changes
     for (const decision of decisions) {
         switch (decision.action) {
             case 'FIRE': {
@@ -216,6 +237,54 @@ async function processUser(ctx: SentinelUserContext, pool: Pool, result: Sentine
                 result.preFetches++
                 break
         }
+
+        // Persist engagement state from this decision (fire-and-forget).
+        //
+        // Pushback recording:
+        //   Only counts when a proactive decision was DROPPED due to BACK_OFF
+        //   (pulseDelta < 0 means fusion returned BACK_OFF for 2+ rejections).
+        //   The first pushback is recorded directly from handler.ts when the user
+        //   rejects a proactive message mid-conversation.
+        //
+        // Positive interaction recording:
+        //   Counts when Sentinel successfully FIREs a proactive message.
+        //   Also counts when user's pulse is ENGAGED+ and they messaged recently
+        //   (this breaks the REACTIVE-mode deadlock where FIRE never happens).
+        if (decision.pulseDelta < 0) {
+            recordPushbackDB(pool, ctx.userId).catch(err =>
+                log.error({ err, userId: ctx.userId }, 'Failed to persist pushback')
+            )
+        } else if (decision.action === 'FIRE') {
+            recordPositiveInteractionDB(pool, ctx.userId).catch(err =>
+                log.error({ err, userId: ctx.userId }, 'Failed to persist positive interaction from FIRE')
+            )
+        }
+    }
+
+    // ── Anti-deadlock: record positive interaction from reactive chat ─────────
+    // In REACTIVE sentinel mode, FIRE never happens so recordPositiveInteractionDB
+    // is never called from the decisions loop above. This means consecutivePositive
+    // can never grow and recovery to PROACTIVE mode is impossible.
+    //
+    // Fix: if the user has been actively chatting (message within last 30 min)
+    // AND their pulse score is healthy (ENGAGED+), count that as a positive
+    // interaction — they're engaging with Aria even if not via proactive messages.
+    // Capped to run at most once per 5 ticks (5 min) per user to avoid over-counting.
+    if (
+        ctx.mode === 'REACTIVE' &&
+        ctx.lastActiveAt > 0 &&
+        Date.now() - ctx.lastActiveAt < 30 * 60 * 1000 &&  // active within 30 min
+        (ctx.pulseState === 'ENGAGED' || ctx.pulseState === 'PROACTIVE') &&
+        tickCount % 5 === 0  // once per 5-min window
+    ) {
+        ctx.consecutivePositive++
+        recordPositiveInteractionDB(pool, ctx.userId).catch(err =>
+            log.error({ err, userId: ctx.userId }, 'Failed to persist reactive positive interaction')
+        )
+        log.debug(
+            { userId: ctx.userId, streak: ctx.consecutivePositive, pulse: ctx.pulseState },
+            'Reactive chat positive interaction recorded (anti-deadlock)',
+        )
     }
 
     result.usersProcessed++

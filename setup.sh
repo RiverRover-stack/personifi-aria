@@ -89,6 +89,14 @@ MCP_KEYS=(
     "ZOMATO_MCP_REFRESH_TOKEN|Zomato MCP Refresh Token|optional"
 )
 
+# Alpha LLM provider chain: Together → Fireworks → Groq (auto-fallback)
+# For testing with Groq only: leave Together + Fireworks empty — Groq is the fallback.
+# For production: set Together as primary (600 rpm, best function-calling accuracy).
+ALPHA_PROVIDER_KEYS=(
+    "TOGETHER_API_KEY|Together AI — primary Alpha provider (api.together.xyz)|optional"
+    "FIREWORKS_API_KEY|Fireworks AI — secondary Alpha provider (fireworks.ai)|optional"
+)
+
 # Known placeholder values (from .env.example defaults that aren't real keys)
 PLACEHOLDER_PATTERNS="^$|^gsk_your_|^your_|^AIzaSy\.\.\.$|^postgresql://user:password@|^hf_your_|^jina_your_|^xoxb-\.\.\.$|^AIza$"
 
@@ -198,12 +206,13 @@ show_dashboard() {
     print_category "🧠 Embedding Services" "${EMBEDDING_KEYS[@]}"
     print_category "✈️  Travel Tools" "${TRAVEL_KEYS[@]}"
     print_category "🍽️  Food & Grocery MCP" "${MCP_KEYS[@]}"
+    print_category "🤖 Alpha LLM Providers (Together→Fireworks→Groq auto-chain)" "${ALPHA_PROVIDER_KEYS[@]}"
 
     # Summary
     local total_set=0
     local total_required=0
     local required_set=0
-    local all_keys=("${CORE_KEYS[@]}" "${CHANNEL_KEYS[@]}" "${EMBEDDING_KEYS[@]}" "${TRAVEL_KEYS[@]}" "${MCP_KEYS[@]}")
+    local all_keys=("${CORE_KEYS[@]}" "${CHANNEL_KEYS[@]}" "${EMBEDDING_KEYS[@]}" "${TRAVEL_KEYS[@]}" "${MCP_KEYS[@]}" "${ALPHA_PROVIDER_KEYS[@]}")
 
     for entry in "${all_keys[@]}"; do
         IFS='|' read -r key desc importance <<< "$entry"
@@ -233,7 +242,7 @@ show_dashboard() {
 # ─── Set Missing Keys ────────────────────────────────────────────────────────
 
 prompt_missing_keys() {
-    local all_keys=("${CORE_KEYS[@]}" "${CHANNEL_KEYS[@]}" "${EMBEDDING_KEYS[@]}" "${TRAVEL_KEYS[@]}" "${MCP_KEYS[@]}")
+    local all_keys=("${CORE_KEYS[@]}" "${CHANNEL_KEYS[@]}" "${EMBEDDING_KEYS[@]}" "${TRAVEL_KEYS[@]}" "${MCP_KEYS[@]}" "${ALPHA_PROVIDER_KEYS[@]}")
     local missing_count=0
 
     # Count missing
@@ -283,7 +292,7 @@ prompt_missing_keys() {
 # ─── Set Specific Key ────────────────────────────────────────────────────────
 
 set_specific_key() {
-    local all_keys=("${CORE_KEYS[@]}" "${CHANNEL_KEYS[@]}" "${EMBEDDING_KEYS[@]}" "${TRAVEL_KEYS[@]}" "${MCP_KEYS[@]}")
+    local all_keys=("${CORE_KEYS[@]}" "${CHANNEL_KEYS[@]}" "${EMBEDDING_KEYS[@]}" "${TRAVEL_KEYS[@]}" "${MCP_KEYS[@]}" "${ALPHA_PROVIDER_KEYS[@]}")
 
     echo ""
     echo -e "  ${BOLD}Available keys:${RESET}"

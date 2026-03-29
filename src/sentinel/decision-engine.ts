@@ -22,8 +22,20 @@ import {
 } from './constants.js'
 import { fusionProactiveDecision } from '../fusion/proactive.js'
 
+/** A user is "actively chatting" if their last message was within this window */
+const ACTIVE_SESSION_WINDOW_MS = 10 * 60 * 1000  // 10 minutes
+
 /**
  * Produce a decision for each stimulus, sorted by score (highest first).
+ *
+ * Gate order:
+ *   0. Active session   — user chatting within 10 min → BUFFER, never FIRE
+ *   1. Active hours     — 8am–10pm IST only
+ *   2. Daily fire limit — PROACTIVE=5/day, else 3/day
+ *   3. Cooldown         — 25 min between fires
+ *   4. Mode             — REACTIVE mode → BUFFER only
+ *   5. Fusion score     — threshold check
+ *   6. One fire per tick
  */
 export function decideSentinelActions(
     stimuli: ScoredStimulus[],
@@ -34,6 +46,23 @@ export function decideSentinelActions(
     let firedThisTick = false
 
     for (const stimulus of sorted) {
+        // ── Gate 0: Active session — NEVER fire during active conversation ────
+        // If the user sent a message within the last 10 minutes, they are in an
+        // active session. Firing a proactive message mid-conversation would:
+        //   - Break conversational flow
+        //   - Pollute the daily fire quota with "chat-time" fires
+        //   - Cause fatigue scores to reflect chat activity instead of idle time
+        // Instead: BUFFER — the stimulus stays ready for when the session ends.
+        if (ctx.lastActiveAt > 0 && Date.now() - ctx.lastActiveAt < ACTIVE_SESSION_WINDOW_MS) {
+            decisions.push({
+                action:  'BUFFER',
+                stimulus,
+                reason:  `User is in active session (last message ${Math.round((Date.now() - ctx.lastActiveAt) / 1000)}s ago) — buffered to avoid mid-conversation interruption`,
+                pulseDelta: 0,
+            })
+            continue
+        }
+
         // ── Gate 1: Active hours ──────────────────────────────────────────────
         if (!isWithinActiveHours()) {
             decisions.push(

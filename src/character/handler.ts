@@ -2,24 +2,25 @@
  * Main Message Handler for Aria Travel Guide
  * DEV 3: The Soul — Memory + Cognitive Layer + Dynamic Personality
  *
- * v2 Flow (classifier-gated dual-model pipeline):
+ * v3 Flow (Alpha 2-call pipeline + Fusion Engine):
  * 0:      Detect /link command → handle early return
  * 1:      Sanitize input
  * 2:      Get/create user, resolve person_id
  * 3:      Rate limit check
  * 4:      Get session
- * 5:      *** Classify message via 8B *** (~100 tokens, ~50-100ms)
- * 6:      Conditional pipeline:
- *           simple  → skip memory/graph/cognitive
- *           moderate/complex → full 5-way Promise.all
- * 7:      brainHooks.routeMessage() (Dev 1's hook, default: no-op)
- * 8:      brainHooks.executeToolPipeline() if needs_tool (Dev 1's hook)
+ * 4.5:    Funnel / task orchestrator intercept
+ * 5:      Classify message (inline heuristic — no 8B call)
+ * 6:      Conditional pipeline: simple → skip memory/graph; complex → 6-way Promise.all
+ * 6.5:    Fusion reactive decision (ProactiveState injection + signal packet write)
+ * 7:      Route decision via brainHooks (gates: location, confirmation, execution bridge)
+ * 7.5:    Action checklist gate (detectActionMode → tryStartActionChecklist early return)
+ * 8:      Execute tool via executeAlphaTool() (sandbox-enforced) if route says useTool
  * 9:      Compose dynamic system prompt
- * 10:     Build messages (minimal prompt for simple messages)
- * 11:     Groq 70B call
+ * 10:     Token budget guard
+ * 11:     callAlpha() — true 2-call pipeline (Together → Fireworks → Groq)
  * 12:     Optional brainHooks.formatResponse()
  * 13-17:  Filter, store, trim, track, auth extract
- * 18-21:  Fire-and-forget writes (SKIPPED for simple messages)
+ * 18-22:  Durable memory writes via Archivist queue
  */
 
 import Groq from 'groq-sdk'
@@ -50,7 +51,6 @@ import { pulseService } from '../pulse/index.js'
 import { agendaPlanner, isCancellationMessage } from '../agenda-planner/index.js'
 import { getPool } from './session-store.js'
 import { selectInlineMedia } from '../inline-media.js'
-import { selectStrategy } from '../influence-engine.js'
 
 // Cross-channel identity
 import { generateLinkCode, redeemLinkCode, getLinkedUserIds } from '../identity.js'
@@ -71,9 +71,13 @@ import { setScene, toolToFlow } from '../character/scene-manager.js'
 
 // Tier 2: LLM with fallback chains
 import { generateResponse, type ChatMessage } from '../llm/tierManager.js'
+import { callAlpha } from '../alpha/alpha-caller.js'
+import { sendBurst, splitIntoMessages } from './burst-sender.js'
 
-import { handleFunnelReply } from '../proactive-intent/index.js'
+import { handleFunnelReply, tryStartActionChecklist } from '../proactive-intent/index.js'
 import { handleTaskReply } from '../task-orchestrator/index.js'
+import { detectActionMode } from '../alpha/action-mode-detector.js'
+import { executeAlphaTool } from '../tool-executor.js'
 import { addFriend, acceptFriend, removeFriend, getFriends, getPendingRequests, resolveUserByPlatformId } from '../social/friend-graph.js'
 import { createSquad, inviteToSquad, acceptSquadInvite, leaveSquad, getSquadsForUser, getPendingSquadInvites } from '../social/squad.js'
 import { detectIntentCategory, recordIntentForUserSquads } from '../social/squad-intent.js'
@@ -153,6 +157,8 @@ export interface MessageResponse {
   requestLocation?: boolean
   /** Venue pins to drop as Telegram map markers (places, directions destinations). */
   venues?: { name: string; address: string; lat: number; lng: number }[]
+  /** When set, the channel layer should send these as separate burst messages instead of text */
+  burstParts?: Array<{ text: string; typingDelayMs: number }>
 }
 
 export interface HandleMessageOptions {
@@ -565,6 +571,20 @@ export async function handleMessage(
     // ─── Step 2: Get or create user, resolve person_id ────────────
     const user = await getOrCreateUser(channel, channelUserId)
 
+    // ─── Step 2.1: Ensure proactive_user_state row exists ────────
+    // Sentinel INNER JOINs on proactive_user_state — users without this row
+    // are invisible to Sentinel and never receive proactive messages.
+    // Create it lazily here (idempotent ON CONFLICT) so no separate
+    // signup flow is needed. Fire-and-forget — don't block the response.
+    if (user.authenticated && channel === 'telegram') {
+      const pool = getPool()
+      import('../sentinel/state-store.js').then(({ ensureProactiveUserState }) => {
+        ensureProactiveUserState(pool, user.userId, channelUserId).catch(err =>
+          log.warn({ err: safeError(err), userId: user.userId }, 'ensureProactiveUserState failed')
+        )
+      }).catch(() => { /* ignore import failure */ })
+    }
+
     // ─── Step 2.5: Onboarding intercept (Issue #92) ──────────────
     // New users must complete onboarding, but responses should still flow through
     // the normal 70B + output-filter pipeline (no early return).
@@ -691,6 +711,7 @@ export async function handleMessage(
     let activeGoal: Awaited<ReturnType<typeof getActiveGoal>> = null
     let agendaStack: Awaited<ReturnType<typeof agendaPlanner.getStack>> = []
     let pulseEngagementState: 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE' = 'PASSIVE'
+    let pulseScore = 0
     let activeTopics: TopicIntent[] = []
     let topicStrategy: string | null = null
 
@@ -740,8 +761,11 @@ export async function handleMessage(
           log.error({ err: safeError(err) }, 'Agenda stack fetch failed')
           return []
         }),
-        // Pulse engagement state — non-blocking read from in-memory hot cache
-        pulseService.getState(user.userId).catch(() => 'PASSIVE' as const),
+        // Pulse engagement state + numeric score — non-blocking read from in-memory hot cache
+        Promise.all([
+          pulseService.getState(user.userId).catch(() => 'PASSIVE' as const),
+          pulseService.getScore(user.userId).catch(() => 0),
+        ]),
       ])
 
       memories = pipelineResults[0]
@@ -749,43 +773,64 @@ export async function handleMessage(
       preferences = pipelineResults[2]
       activeGoal = pipelineResults[3]
       agendaStack = pipelineResults[4]
-      pulseEngagementState = pipelineResults[5] as 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE'
+      pulseEngagementState = (pipelineResults[5] as [string, number])[0] as 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE'
+      pulseScore = (pipelineResults[5] as [string, number])[1]
     } else if (!lightweightOnboarding) {
       // Agenda is consulted on every message (Issue #67), including simple turns.
       agendaStack = await agendaPlanner.getStack(user.userId, session.sessionId).catch(() => [])
     }
 
-    // ─── Phase 1: Parallel Fusion Engine decision (logging only) ────
-    // Runs alongside the existing pipeline — does NOT affect behavior.
-    // Feature flag: FUSION_ENGINE_ENABLED (default: false)
-    if (process.env.FUSION_ENGINE_ENABLED === 'true') {
-      import('../fusion/index.js').then(({ fusionReactiveDecision }) =>
-        fusionReactiveDecision(pool, {
-          userId: user.userId,
-          userMessage,
-          extractedSignals: {
-            topic: classification.detected_topic ?? null,
-            intent: classification.tool_hint ?? null,
-            sentiment: (classification.interest_signal === 'positive' || classification.interest_signal === 'committed') ? 'positive' : (classification.interest_signal === 'negative' ? 'negative' : 'neutral'),
-            entities: [],
-          },
-          toolRequest: null,
-          contextBundle: {
-            memories,
-            preferences,
-            graphNeighbors: graphContext,
-          },
-          pulseState: pulseEngagementState,
-          pulseScore: 0,
-        })
-          .then(output => {
-            log.info({ userId: user.userId, route: output.decision, confidence: output.confidence.toFixed(2), proactive: output.proactiveContext?.length ?? 0, invalidated: output.invalidatedStimuli.length }, 'Fusion/Reactive')
-          })
-          .catch(err => log.error({ err: (err as Error).message }, 'Fusion/Reactive error'))
-      ).catch(err => log.error({ err: (err as Error).message }, 'Fusion/Reactive import error'))
+    // ─── Fusion Engine reactive decision (live router) ────────────
+    // Fetch fusion output early; context injection happens after Step 9 (systemPromptComposed)
+    let fusionOutput: { decision: string; contextAdditions: string[]; invalidatedStimuli: string[]; pulseDelta: number; confidence: number; proactiveContext: unknown[] | null } | null = null
+    try {
+      const { fusionReactiveDecision } = await import('../fusion/index.js')
+      fusionOutput = await fusionReactiveDecision(pool, {
+        userId: user.userId,
+        userMessage,
+        extractedSignals: {
+          topic: classification.detected_topic ?? null,
+          intent: classification.tool_hint ?? null,
+          sentiment: (classification.interest_signal === 'positive' || classification.interest_signal === 'committed') ? 'positive' : (classification.interest_signal === 'negative' ? 'negative' : 'neutral'),
+          entities: [],
+        },
+        toolRequest: null,
+        contextBundle: {
+          memories,
+          preferences,
+          graphNeighbors: graphContext,
+        },
+        pulseState: pulseEngagementState,
+        pulseScore,
+      })
+      log.info({ userId: user.userId, route: fusionOutput.decision, confidence: fusionOutput.confidence.toFixed(2), proactive: fusionOutput.proactiveContext?.length ?? 0, invalidated: fusionOutput.invalidatedStimuli.length }, 'Fusion/Reactive')
+
+      // ── Proactive pushback detection ────────────────────────────────────────
+      // If the user sent a rejection signal (negative interest, cancellation phrase)
+      // AND there was an active proactive context (Sentinel had sent or buffered
+      // a stimulus), record a pushback in proactive_user_state.
+      //
+      // This fixes the broken pushback system: previously pushback_count could never
+      // grow because recordPushbackDB was only called from pulseDelta < 0 decisions,
+      // which themselves required pushback_count >= 2 — an unbreakable circular dep.
+      //
+      // Now: the FIRST pushback is recorded here (in the reactive message handler),
+      // and subsequent ones by the Sentinel loop's BACK_OFF fusion path.
+      if (isRejection && fusionOutput && (fusionOutput.proactiveContext?.length ?? 0) > 0) {
+        import('../sentinel/state-store.js').then(({ recordPushbackDB }) => {
+          recordPushbackDB(pool, user.userId).catch(err =>
+            log.warn({ err: safeError(err), userId: user.userId }, 'Failed to record proactive pushback')
+          )
+        }).catch(() => { /* ignore import failure */ })
+        log.info({ userId: user.userId }, 'Proactive pushback recorded — user rejected active proactive context')
+      }
+    } catch (err) {
+      log.error({ err: (err as Error).message }, 'Fusion/Reactive error')
     }
 
-    // ─── Step 7: Brain hooks — route message (Dev 1) ──────────────
+    // ─── Step 7: Route decision (gates: location, confirmation, execution bridge) ─
+    // brainHooks.routeMessage() is kept for UX gates only — it does NOT execute tools.
+    // Tool execution is now handled by executeAlphaTool() (sandbox-enforced) below.
     const brainHooks = getBrainHooks()
     const routeContext: RouteContext = {
       userMessage,
@@ -813,10 +858,7 @@ export async function handleMessage(
         routeDecision = { useTool: false, toolName: null, toolParams: {} }
       }
 
-      // ─── Step 7.1: Execution Bridge — override when 8B misses confirmatory intent ─
-      // When a topic is in 'executing' phase and the user sends a confirmatory message
-      // ("yeah check it", "sure", "go ahead"), the 8B classifier may not detect it as a
-      // tool request. We override routeDecision to fire the correct tool.
+      // ─── Step 7.1: Execution Bridge — override when classifier misses confirmatory intent ─
       if (!routeDecision.useTool && activeTopics.length > 0) {
         executingTopic = activeTopics.find(t => t.phase === 'executing') ?? null
         if (executingTopic && isConfirmatoryMessage(userMessage)) {
@@ -836,7 +878,6 @@ export async function handleMessage(
       // ─── Step 7.5: Location check — ask before running location-dependent tools ─
       if (routeDecision.useTool && routeDecision.toolName &&
         shouldRequestLocation(userMessage, user.homeLocation, routeDecision.toolName)) {
-        // Park the tool so we can execute it once the user shares their location
         pendingToolStore.set(user.userId, {
           toolName: routeDecision.toolName,
           toolParams: routeDecision.toolParams,
@@ -848,7 +889,6 @@ export async function handleMessage(
       }
 
       // ─── Step 7.55: Pulse gate — compare_prices_proactive only runs when ENGAGED+ ─
-      // Prevents the bot from pushing food comparisons at new/passive users.
       if (routeDecision.useTool && routeDecision.toolName === 'compare_prices_proactive' &&
         (pulseEngagementState === 'PASSIVE' || pulseEngagementState === 'CURIOUS')) {
         routeDecision = { useTool: false, toolName: null, toolParams: {} }
@@ -859,7 +899,6 @@ export async function handleMessage(
         TOOLS_REQUIRING_CONFIRM.has(routeDecision.toolName) &&
         !isConfirmatoryMessage(userMessage) &&
         !isExplicitPlatformRequest(userMessage)) {
-        // Only gate if this is an ambiguous first-time request (not already a confirmation)
         const pending = pendingToolStore.get(user.userId)
         if (!pending || pending.toolName !== routeDecision.toolName) {
           pendingToolStore.set(user.userId, {
@@ -880,26 +919,63 @@ export async function handleMessage(
         pendingToolStore.delete(user.userId)
       }
 
-      // ─── Step 8: Execute tool pipeline if needed (Dev 1) ──────────
-      if (routeDecision.useTool) {
-        const toolResult = await brainHooks.executeToolPipeline(routeDecision, routeContext)
-        if (toolResult?.success && toolResult.data) {
-          toolResultStr = toolResult.data
-          toolRawData = toolResult.raw
-          toolMediaDirective = toolResult.mediaDirective ?? null
-          if (routeDecision.toolName) {
-            rememberToolContext(
-              user.userId,
-              extractToolMediaContext(routeDecision.toolName, toolResult.raw),
-              toolMediaDirective,
-            )
+      // ─── Step 7.7: Action checklist gate (Storyboard 3) ──────────────────────
+      // When pulse is high enough and the message implies multiple actionable tasks,
+      // show a checklist instead of executing immediately. Tools only fire after
+      // the user taps "Go ✅" — confirmed via handleChecklistCallback().
+      if (!onboardingActive && !isSimple && channel === 'telegram') {
+        const actionDecision = detectActionMode(
+          pulseEngagementState,
+          pulseScore,
+          classification,
+          (fusionOutput?.proactiveContext as any[] | null) ?? null,
+          preferences as Record<string, string>,
+        )
+        if (actionDecision.shouldShowChecklist && actionDecision.suggestedItems.length >= 2) {
+          const started = await tryStartActionChecklist(
+            channelUserId,
+            channelUserId, // chatId = channelUserId for Telegram
+            actionDecision.suggestedItems,
+          ).catch(() => false)
+          if (started) {
+            // Checklist sent — no LLM call needed this turn
+            return { text: '' }
           }
         }
-        // Register active flow so follow-up replies ("15th", "2 adults") get context
-        if (routeDecision.toolName) {
-          const flow = toolToFlow(routeDecision.toolName)
-          setScene(user.userId, { flow, partialArgs: routeDecision.toolParams })
+      }
+
+      // ─── Step 8: Execute tool via sandbox-enforced executeAlphaTool() ─────────
+      // Replaces brainHooks.executeToolPipeline(). Uses the same tool registry
+      // but routes through tool-sandbox.ts for argument validation.
+      if (routeDecision.useTool && routeDecision.toolName) {
+        try {
+          const execResult = await executeAlphaTool(
+            routeDecision.toolName,
+            JSON.stringify(routeDecision.toolParams ?? {}),
+            user.userId,
+          )
+          if (execResult.success && execResult.data != null) {
+            toolResultStr = typeof execResult.data === 'string'
+              ? execResult.data
+              : JSON.stringify(execResult.data)
+            toolRawData = (execResult as any).raw ?? null
+            toolMediaDirective = (execResult as any).mediaDirective ?? null
+            if (routeDecision.toolName) {
+              rememberToolContext(
+                user.userId,
+                extractToolMediaContext(routeDecision.toolName, toolRawData),
+                toolMediaDirective,
+              )
+            }
+          } else {
+            log.warn({ tool: routeDecision.toolName, err: execResult.error }, 'Tool execution failed')
+          }
+        } catch (err) {
+          log.error({ tool: routeDecision.toolName, err: safeError(err) }, 'executeAlphaTool threw')
         }
+        // Register active flow for follow-up context
+        const flow = toolToFlow(routeDecision.toolName)
+        setScene(user.userId, { flow, partialArgs: routeDecision.toolParams })
       }
 
       // Include additional context from router
@@ -914,8 +990,6 @@ export async function handleMessage(
         toolResultStr = formatProactiveForPrompt(toolRawData)
       }
 
-      // This turn-level signal is computed before Step 17 persists profile updates.
-      // At this point user.homeLocation is intentionally still stale from DB.
       const locationCandidate = user.displayName && !user.homeLocation
         ? extractLocationCandidate(userMessage)
         : null
@@ -933,15 +1007,12 @@ export async function handleMessage(
       }
 
       // ─── Step 8d: New user onboarding hint ────────────────────────
-      // On the very first message, nudge Aria to collect name + location
       if (!onboardingActive && isFirstMessage && !user.displayName) {
         const onboardingHint = '\n\n[ARIA HINT: This is the user\'s first message. Warmly greet them, ask their name, and gently mention you\'d love to know their city so you can give local food & travel recommendations. Keep it natural and friendly — one question at a time.]'
         toolResultStr = toolResultStr ? toolResultStr + onboardingHint : onboardingHint
       }
 
       // ─── Step 8e: Onboarding completion → proactive city suggestion ───────────
-      // If user just provided their location (name already known), run a lightweight
-      // places query and force a specific opener instead of generic "what's on your mind?".
       if (!onboardingActive && onboardingJustCompleted && isEarlyConversation && !routeDecision.useTool) {
         const proactive = getProactiveSuggestionQuery(locationCandidate)
         const proactiveLocation = proactive.location || locationCandidate || user.homeLocation || 'Bengaluru'
@@ -949,52 +1020,36 @@ export async function handleMessage(
         const trafficState = getTrafficState(proactiveLocation)
         const preferDelivery = !!weatherState?.isRaining || trafficState?.severity === 'heavy'
 
-        const proactiveDecision: RouteDecision = preferDelivery
-          ? {
-            useTool: true,
-            toolName: 'compare_food_prices',
-            toolParams: {
-              query: weatherState?.isRaining ? 'comfort food delivery' : 'top delivery deals',
-              location: proactiveLocation,
-            },
-          }
-          : {
-            useTool: true,
-            toolName: 'search_places',
-            toolParams: {
-              query: proactive.query,
-              location: proactive.location,
-              openNow: proactive.openNow,
-            },
-          }
+        const proactiveToolName = preferDelivery ? 'compare_food_prices' : 'search_places'
+        const proactiveToolParams = preferDelivery
+          ? { query: weatherState?.isRaining ? 'comfort food delivery' : 'top delivery deals', location: proactiveLocation }
+          : { query: proactive.query, location: proactive.location, openNow: proactive.openNow }
 
-        const proactiveResult = await brainHooks.executeToolPipeline(proactiveDecision, routeContext).catch(err => {
-          log.warn({ err: safeError(err) }, 'Proactive onboarding tool call failed')
-          return null
-        })
-
-        const proactiveHint =
-          `\n\n[ARIA HINT: Onboarding just completed. The user shared their area (${proactive.location}). ` +
-          `Current context: weather=${weatherState?.condition ?? 'unknown'}, traffic=${trafficState?.severity ?? 'unknown'}. ` +
-          `${preferDelivery ? 'Conditions are friction-heavy — prioritize delivery/indoor recommendations.' : 'Conditions are workable — suggest one specific nearby place.'} ` +
-          `Lead with ONE specific, opinionated suggestion grounded in current context (${proactive.moodTag}) and tool data. ` +
-          `Offer one concrete next action. Do NOT ask generic openers like "what are you in the mood for?" or "what's on your mind?"]`
-
-        if (proactiveResult?.success && proactiveResult.data) {
-          routeDecision = proactiveDecision
-          toolRawData = proactiveResult.raw
-          toolMediaDirective = proactiveResult.mediaDirective ?? null
-          rememberToolContext(
+        try {
+          const proactiveExec = await executeAlphaTool(
+            proactiveToolName,
+            JSON.stringify(proactiveToolParams),
             user.userId,
-            extractToolMediaContext(proactiveDecision.toolName!, proactiveResult.raw),
-            toolMediaDirective,
           )
-          toolResultStr = toolResultStr
-            ? `${toolResultStr}\n\n${proactiveResult.data}${proactiveHint}`
-            : `${proactiveResult.data}${proactiveHint}`
-        } else {
-          // Tool failure should still keep the proactive onboarding behavior.
-          toolResultStr = toolResultStr ? toolResultStr + proactiveHint : proactiveHint
+          const proactiveHint =
+            `\n\n[ARIA HINT: Onboarding just completed. The user shared their area (${proactive.location}). ` +
+            `Current context: weather=${weatherState?.condition ?? 'unknown'}, traffic=${trafficState?.severity ?? 'unknown'}. ` +
+            `${preferDelivery ? 'Conditions are friction-heavy — prioritize delivery/indoor recommendations.' : 'Conditions are workable — suggest one specific nearby place.'} ` +
+            `Lead with ONE specific, opinionated suggestion grounded in current context (${proactive.moodTag}) and tool data. ` +
+            `Offer one concrete next action. Do NOT ask generic openers like "what are you in the mood for?" or "what's on your mind?"]`
+
+          if (proactiveExec.success && proactiveExec.data) {
+            routeDecision = { useTool: true, toolName: proactiveToolName, toolParams: proactiveToolParams }
+            toolRawData = (proactiveExec as any).raw ?? null
+            toolMediaDirective = (proactiveExec as any).mediaDirective ?? null
+            rememberToolContext(user.userId, extractToolMediaContext(proactiveToolName, toolRawData), toolMediaDirective)
+            const data = typeof proactiveExec.data === 'string' ? proactiveExec.data : JSON.stringify(proactiveExec.data)
+            toolResultStr = toolResultStr ? `${toolResultStr}\n\n${data}${proactiveHint}` : `${data}${proactiveHint}`
+          } else {
+            toolResultStr = toolResultStr ? toolResultStr + proactiveHint : proactiveHint
+          }
+        } catch (err) {
+          log.warn({ err: safeError(err) }, 'Proactive onboarding tool call failed')
         }
       }
     }
@@ -1049,6 +1104,16 @@ export async function handleMessage(
     } catch (err) {
       log.error({ err: safeError(err) }, 'Personality composition failed, using static SOUL.md')
       systemPromptComposed = getRawSoulPrompt()
+    }
+
+    // ─── Inject Fusion context additions into system prompt (after composition) ──
+    let proactiveContextInjected = false
+    if (fusionOutput?.contextAdditions?.length) {
+      const contextBlock = fusionOutput.contextAdditions.join('\n')
+      const lenBefore = systemPromptComposed.length
+      systemPromptComposed = systemPromptComposed + '\n\n---\n' + contextBlock
+      proactiveContextInjected = true
+      log.debug({ promptLengthBefore: lenBefore, promptLengthAfter: systemPromptComposed.length }, 'Fusion context injected')
     }
 
     // Structured logging for debug
@@ -1125,21 +1190,7 @@ export async function handleMessage(
     }
 
     // ─── Step 11: Call Tier 2 (70B) + inline media fetch — truly concurrent ──
-    // selectStrategy() is pure/sync — resolves mediaHint with zero cost
-    const istHourForMedia = parseInt(
-      new Date().toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: 'Asia/Kolkata' }),
-      10,
-    )
-    const influenceStrategy = selectStrategy(pulseEngagementState, {
-      toolName: routeDecision?.toolName ?? undefined,
-      hasToolResult: !!toolResultStr,
-      toolInvolved: !!routeDecision?.toolName,
-      istHour: istHourForMedia,
-      isWeekend: [0, 6].includes(new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getDay()),
-      hasPreferences: Object.keys(preferences).length > 0,
-      userSignal: classification.userSignal,
-      activeTopics,
-    })
+    // mediaHint derived directly from tool context and user request (influence-engine removed)
     const activeToolContext = routeDecision.toolName && toolRawData
       ? extractToolMediaContext(routeDecision.toolName, toolRawData)
       : null
@@ -1150,19 +1201,31 @@ export async function handleMessage(
     const effectiveMediaDirective = toolMediaDirective ?? recentToolContext?.mediaDirective ?? null
     const hasStrongToolPhotos = !!(effectiveToolContext?.photoUrls?.length)
     const userAsksForMedia = /\b(image|images|photo|photos|pic|pics|picture|pictures|show\s*me|send\s*me)\b/i.test(userMessage)
-    const mediaHint = (influenceStrategy?.mediaHint ?? false) || hasStrongToolPhotos || userAsksForMedia
+    const mediaHint = hasStrongToolPhotos || userAsksForMedia
     const weatherStimulus = getWeatherState()?.stimulus ?? null
-
-    const tier2Messages: ChatMessage[] = messages.map(m => ({
-      role: m.role as 'system' | 'user' | 'assistant',
-      content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-    }))
 
     // Fire both concurrently — media selection races with a 1500ms ceiling
     // so it never adds latency on top of the LLM (LLM typically takes 1-3s)
     const MEDIA_TIMEOUT_MS = 3000
-    const [{ text: tier2Response, provider: tier2Provider }, inlineMediaItem] = await Promise.all([
-      generateResponse(tier2Messages, { maxTokens: MAX_TOKENS, temperature: TEMPERATURE }),
+    const [alphaResult, inlineMediaItem] = await Promise.all([
+      callAlpha({
+        userId: user.userId,
+        userMessage: modelUserMessage,
+        history: session.messages.slice(-historyLimit).map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+        preferences,
+        memories,
+        graphContext,
+        // Pass structured ProactiveState rows so context-manager can format them
+        // with score + stimulus_type into the 300-token proactive budget block.
+        // fusionOutput.proactiveContext contains the active ProactiveStateRow[]
+        // already fetched and validated by fusionReactiveDecision().
+        proactiveState: (fusionOutput?.proactiveContext as any[] | null) ?? undefined,
+        pulseContext: { state: pulseEngagementState, score: pulseScore },
+        toolResult: toolResultStr ?? null,
+        homeLocation: user.homeLocation,
+        userName: user.displayName,
+        authenticated: !!(user.displayName && user.homeLocation),
+      }),
       Promise.race([
         selectInlineMedia(
           user.userId,
@@ -1179,7 +1242,9 @@ export async function handleMessage(
       ]),
     ])
 
-    log.info({ tier2Provider, inlineMediaType: inlineMediaItem?.type ?? null }, 'Tier 2 response')
+    const tier2Response = alphaResult.responseText
+    const tier2Provider = alphaResult.provider
+    log.info({ tier2Provider, inlineMediaType: inlineMediaItem?.type ?? null }, 'Alpha response')
 
     let rawResponse = tier2Response
 
@@ -1390,12 +1455,28 @@ export async function handleMessage(
       log.debug({ urls: resolvedMedia.map(m => m.url?.substring(0, 80)) }, 'Media URLs')
     }
 
+    // ─── Post-response: Fusion invalidation + pulse delta (fire-and-forget) ──
+    if (fusionOutput) {
+      if (fusionOutput.invalidatedStimuli.length > 0) {
+        import('../db/fusion-tables.js').then(({ invalidateProactiveStimuli }) =>
+          invalidateProactiveStimuli(pool, user.userId, fusionOutput!.invalidatedStimuli)
+        ).catch(err => log.error({ err: (err as Error).message }, 'Fusion invalidation error'))
+      }
+      if (fusionOutput.pulseDelta !== 0) {
+        // pulse delta from fusion — recorded via recordEngagement on next interaction
+        log.debug({ userId: user.userId, pulseDelta: fusionOutput.pulseDelta }, 'Fusion pulse delta (deferred)')
+      }
+    }
+
     return {
       text: assistantResponse,
       // Inline media (reel/image from influence strategy) takes precedence over
       // tool-extracted product photos. Falls back gracefully when neither is available.
       media: resolvedMedia,
       venues,
+      ...(proactiveContextInjected || assistantResponse.split('\n\n').length > 2
+        ? { burstParts: splitIntoMessages(assistantResponse, 'reactive') }
+        : {}),
       ...(onboardingActive && onboardingResult?.requestLocation ? { requestLocation: true } : {}),
       ...(onboardingActive && onboardingResult?.buttons ? { _buttons: onboardingResult.buttons } : {}),
     }
