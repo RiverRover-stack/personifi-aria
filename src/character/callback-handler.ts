@@ -99,6 +99,83 @@ export async function handleCallbackAction(
     return { text: result.message }
   }
 
+  // ── Edit preferences from /settings (edit_pref_*) ──────────────────────────
+  // Shows the relevant preference keyboard so user can update a single category.
+  if (callbackData.startsWith('edit_pref_')) {
+    const category = callbackData.replace('edit_pref_', '')
+    const PREF_KEYBOARDS: Record<string, { text: string; prompt: string; buttons: Array<Array<{ text: string; callback_data: string }>> }> = {
+      dietary: {
+        prompt: '🍕 <b>Food preference</b>\nWhat kind of food are you usually after?',
+        text: 'dietary',
+        buttons: [
+          [{ text: '🍛 South Indian', callback_data: 'pref_food_southindian' }, { text: '🍕 Multi-cuisine', callback_data: 'pref_food_multicuisine' }],
+          [{ text: '🥩 Non-veg heavy', callback_data: 'pref_food_nonveg' }, { text: '🥗 Veg/vegan', callback_data: 'pref_food_veg' }],
+        ],
+      },
+      budget: {
+        prompt: '💰 <b>Budget preference</b>\nWhat\'s your usual spend per meal/outing?',
+        text: 'budget',
+        buttons: [
+          [{ text: '💰 Budget (< ₹400)', callback_data: 'pref_budget_budget' }, { text: '💳 Mid (₹400–800)', callback_data: 'pref_budget_mid' }],
+          [{ text: '💎 Premium (> ₹800)', callback_data: 'pref_budget_premium' }],
+        ],
+      },
+      travel: {
+        prompt: '✈️ <b>Travel style</b>\nHow do you like to travel?',
+        text: 'travel_style',
+        buttons: [
+          [{ text: '🎒 Backpacker', callback_data: 'pref_travel_backpacker' }, { text: '🏨 Comfort seeker', callback_data: 'pref_travel_comfort' }],
+          [{ text: '✈️ Explorer', callback_data: 'pref_travel_explorer' }, { text: '🏖️ Leisure', callback_data: 'pref_travel_leisure' }],
+        ],
+      },
+      entertainment: {
+        prompt: '🎬 <b>Entertainment</b>\nWhat do you enjoy most?',
+        text: 'entertainment',
+        buttons: [
+          [{ text: '🎬 Movies/OTT', callback_data: 'pref_entertainment_movies_ott' }, { text: '🎵 Live Music', callback_data: 'pref_entertainment_live_music' }],
+          [{ text: '🎮 Gaming', callback_data: 'pref_entertainment_gaming' }, { text: '📚 Reading/Cafes', callback_data: 'pref_entertainment_reading_cafes' }],
+        ],
+      },
+      time: {
+        prompt: '⏰ <b>Time preference</b>\nWhen are you most active?',
+        text: 'time_preference',
+        buttons: [
+          [{ text: '🌅 Morning person', callback_data: 'pref_time_morning' }, { text: '🌙 Night owl', callback_data: 'pref_time_night_owl' }],
+          [{ text: '🕐 Flexible', callback_data: 'pref_time_flexible' }, { text: '📅 Weekend warrior', callback_data: 'pref_time_weekend' }],
+        ],
+      },
+      dietary_restriction: {
+        prompt: '🥗 <b>Dietary restrictions</b>\nAny restrictions I should know about?',
+        text: 'dietary_restriction',
+        buttons: [
+          [{ text: '🚫 None', callback_data: 'pref_dietary_none' }, { text: '🥛 Lactose-free', callback_data: 'pref_dietary_lactose_free' }],
+          [{ text: '🌾 Gluten-free', callback_data: 'pref_dietary_gluten_free' }, { text: '🐄 Jain', callback_data: 'pref_dietary_jain' }],
+        ],
+      },
+      commute: {
+        prompt: '🚗 <b>Commute style</b>\nHow do you usually get around?',
+        text: 'commute',
+        buttons: [
+          [{ text: '🚗 Car/cab', callback_data: 'pref_commute_car_cab' }, { text: '🛵 Two-wheeler', callback_data: 'pref_commute_two_wheeler' }],
+          [{ text: '🚇 Metro/bus', callback_data: 'pref_commute_metro_bus' }, { text: '🏠 Work from home', callback_data: 'pref_commute_wfh' }],
+        ],
+      },
+      comms: {
+        prompt: '📱 <b>Communication style</b>\nHow do you like updates from me?',
+        text: 'communication',
+        buttons: [
+          [{ text: '📱 Quick updates', callback_data: 'pref_comms_quick' }, { text: '📝 Detailed', callback_data: 'pref_comms_detailed' }],
+          [{ text: '😄 Casual/fun', callback_data: 'pref_comms_casual' }, { text: '📊 Data-driven', callback_data: 'pref_comms_data_driven' }],
+        ],
+      },
+    }
+    const pref = PREF_KEYBOARDS[category]
+    if (pref) {
+      return { text: pref.prompt, choices: pref.buttons.flat().map(b => ({ label: b.text, action: b.callback_data })) }
+    }
+    return null
+  }
+
   // ── Onboarding callbacks (Issue #92) ───────────────────────────────────────
   // Preference buttons (pref_food_*, pref_budget_*, pref_travel_*),
   // friend selection (add_friend_*), and skip (onboarding_skip_friends)

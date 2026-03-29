@@ -9,6 +9,8 @@ import {
   FriendPayloadSchema,
   OnboardingPayloadSchema,
   MenuActionPayloadSchema,
+  TripPlanPayloadSchema,
+  EventPayloadSchema,
 } from './webapp-validators.js'
 
 const MAX_PAYLOAD_BYTES = 4096
@@ -98,6 +100,24 @@ export async function handleWebAppData(
         await sendTgMessage(chatId, cmdResponse.text)
       }
     }
+
+  } else if (type === 'trip_plan') {
+    const result = TripPlanPayloadSchema.safeParse(parsed)
+    if (!result.success) {
+      log.warn({ userId, errors: result.error.issues }, 'Trip plan payload validation failed')
+      return
+    }
+    const { handleTripPlanSubmission } = await import('./handlers/trip-handler.js')
+    await handleTripPlanSubmission(chatId, userId, result.data, log)
+
+  } else if (type === 'event_upload') {
+    const result = EventPayloadSchema.safeParse(parsed)
+    if (!result.success) {
+      log.warn({ userId, errors: result.error.issues }, 'Event upload payload validation failed')
+      return
+    }
+    const { handleEventSubmission } = await import('./handlers/event-handler.js')
+    await handleEventSubmission(chatId, userId, result.data, log)
 
   } else {
     log.warn({ userId, type }, 'Unknown Mini App payload type — ignoring')

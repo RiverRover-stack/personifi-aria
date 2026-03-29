@@ -117,8 +117,16 @@ function getLocationsResponse(): CommandResponse {
 }
 
 function getTripResponse(): CommandResponse {
+  const baseUrl = process.env.WEBAPP_BASE_URL
+  if (!baseUrl) {
+    return { text: "Just tell me where you want to go and I'll plan it with you! ✈️" }
+  }
   return {
-    text: "🗺️ <b>Trip Planning</b> — coming soon!\n\nFor now, just tell me where you want to go and I'll plan it with you.",
+    text: '🗺️ <b>Plan a Trip</b>\nPick your destination, dates, and vibe — I\'ll handle the rest.',
+    webAppButton: {
+      url: `${baseUrl}/webapp/trip-planner.html`,
+      buttonText: '✈️ Plan a Trip',
+    },
   }
 }
 
