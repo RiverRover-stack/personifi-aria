@@ -568,6 +568,20 @@ export async function handleMessage(
       return { text: "Ha, nice try! 😄 I'm just Aria, your travel buddy. So... anywhere you're thinking of exploring?" }
     }
 
+    // ─── Step 1.5: Intercept phone number messages ────────────────
+    // If the message looks like a friend's name + phone number, do NOT route
+    // through Alpha (which will hallucinate their activity). Return directly.
+    const PHONE_PATTERN = /(\+?91[-\s]?)?[6-9]\d{9}/
+    if (PHONE_PATTERN.test(userMessage) && !userMessage.startsWith('[')) {
+      const baseUrl = process.env.WEBAPP_BASE_URL
+      const addFriendsPrompt = baseUrl
+        ? "To add them, use /friends and search by their Telegram username — I'll send them an invite!"
+        : "To add them properly, use /friends — I'll send them an invite once they're on Aria too!"
+      return {
+        text: `Looks like you shared a phone number! I can't look people up by phone directly, but I can connect you once they're on Aria.\n\n${addFriendsPrompt}`,
+      }
+    }
+
     // ─── Step 2: Get or create user, resolve person_id ────────────
     const user = await getOrCreateUser(channel, channelUserId)
 

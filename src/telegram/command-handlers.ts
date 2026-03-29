@@ -4,6 +4,7 @@
  */
 
 import { getPool } from '../character/session-store.js'
+import { getFriends, getPendingRequests } from '../social/friend-graph.js'
 
 export interface CommandResponse {
   text: string
@@ -27,8 +28,8 @@ export async function handleCommand(
 
   switch (cmd) {
     case 'start': return null  // handled by onboarding flow
-    case 'settings': return getSettingsResponse(internalUserId)
-    case 'friends': return getFriendsResponse()
+    case 'settings': return await getSettingsResponse(internalUserId)
+    case 'friends': return await getFriendsResponse(internalUserId)
     case 'locations': return getLocationsResponse()
     case 'trip': return getTripResponse()
     case 'help': return getHelpResponse()
@@ -88,16 +89,52 @@ async function getSettingsResponse(userId: string): Promise<CommandResponse> {
   }
 }
 
-function getFriendsResponse(): CommandResponse {
+async function getFriendsResponse(userId: string): Promise<CommandResponse> {
   const baseUrl = process.env.WEBAPP_BASE_URL
-  if (!baseUrl) {
-    return { text: "Tell me a friend's Telegram username or phone number and I'll add them to your squad!" }
+
+  const [friends, pending] = await Promise.all([
+    getFriends(userId).catch(() => []),
+    getPendingRequests(userId).catch(() => []),
+  ])
+
+  const lines: string[] = ['👥 <b>Your Friends</b>\n']
+
+  if (friends.length === 0 && pending.length === 0) {
+    lines.push("You haven't added any friends yet.")
+  } else {
+    if (friends.length > 0) {
+      lines.push(...friends.map(f => `• ${f.displayName ?? f.alias ?? 'Unknown'}`))
+    }
+    if (pending.length > 0) {
+      lines.push(`\n⏳ <b>Pending requests</b>`)
+      lines.push(...pending.map(p => `• ${p.displayName ?? 'Unknown'} <i>(tap to accept)</i>`))
+    }
   }
+
+  const keyboard: CommandResponse['keyboard'] = {
+    inline_keyboard: [
+      ...(pending.map(p => ([{
+        text: `✅ Accept ${p.displayName ?? 'request'}`,
+        callback_data: `friend:accept:${p.friendId ?? p.userId}`,
+      }]))),
+      baseUrl ? [] : [],
+    ].filter(row => row.length > 0),
+  }
+
+  if (baseUrl) {
+    return {
+      text: lines.join('\n'),
+      webAppButton: {
+        url: `${baseUrl}/webapp/friend-selector.html`,
+        buttonText: '➕ Add Friends',
+      },
+    }
+  }
+
   return {
-    text: 'Manage your friend circle 👥',
-    webAppButton: {
-      url: `${baseUrl}/webapp/friend-selector.html`,
-      buttonText: '👥 Open Friends',
+    text: lines.join('\n'),
+    keyboard: {
+      inline_keyboard: keyboard.inline_keyboard.length > 0 ? keyboard.inline_keyboard : [[{ text: '➕ Add a friend — share their Telegram username', callback_data: 'noop' }]],
     },
   }
 }

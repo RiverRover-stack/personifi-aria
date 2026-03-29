@@ -176,11 +176,69 @@ export async function handleCallbackAction(
     return null
   }
 
-  // ── Onboarding callbacks (Issue #92) ───────────────────────────────────────
-  // Preference buttons (pref_food_*, pref_budget_*, pref_travel_*),
-  // friend selection (add_friend_*), and skip (onboarding_skip_friends)
+  // ── Preference selection callbacks (pref_*) ────────────────────────────────
+  // Post-onboarding: save directly to DB, no Alpha involved.
+  // During onboarding: delegate to handleOnboarding flow.
+  if (callbackData.startsWith('pref_')) {
+    try {
+      const user = await getOrCreateUser(channel, userId)
+
+      // Category prefix map: pref_{prefix}_{value}
+      const PREF_CATEGORY_MAP: Record<string, string> = {
+        food: 'dietary',
+        budget: 'budget',
+        travel: 'travel_style',
+        entertainment: 'entertainment',
+        time: 'time_preference',
+        dietary: 'dietary_restriction',
+        commute: 'commute',
+        comms: 'communication',
+      }
+
+      const parts = callbackData.split('_') // ['pref', 'food', 'multicuisine'] or ['pref', 'food', 'non', 'veg']
+      const prefix = parts[1]
+      const value = parts.slice(2).join('_')
+      const category = PREF_CATEGORY_MAP[prefix]
+
+      if (category && value && user.onboardingComplete) {
+        // Post-onboarding: save directly, skip Alpha entirely
+        const { getPool } = await import('./session-store.js')
+        const pool = getPool()
+        await pool.query(
+          `INSERT INTO user_preferences (user_id, category, value, confidence, affinity_score, created_at, updated_at)
+           VALUES ($1, $2, $3, 0.9, 0.7, NOW(), NOW())
+           ON CONFLICT (user_id, category) DO UPDATE SET
+             value = EXCLUDED.value,
+             confidence = EXCLUDED.confidence,
+             updated_at = NOW()`,
+          [user.userId, category, value]
+        )
+        const label = value.replace(/_/g, ' ')
+        return { text: `✅ Got it — <b>${label}</b> saved!` }
+      }
+
+      // During onboarding: route through existing flow
+      const result = await handleOnboarding(user.userId, '', callbackData)
+      if (result.handled) {
+        const generated = await handleMessage(
+          channel,
+          userId,
+          `[onboarding_callback] ${callbackData}`,
+          { bypassOnboarding: true, onboardingResult: result, lightweightOnboarding: true },
+        )
+        return {
+          text: generated.text,
+          choices: (generated._buttons ?? result.buttons)?.flat().map(b => ({ label: b.text, action: b.callback_data })),
+        }
+      }
+    } catch (err) {
+      console.warn('[CallbackHandler] Preference callback failed:', (err as Error).message)
+    }
+    return null
+  }
+
+  // ── Onboarding-only callbacks ───────────────────────────────────────────────
   if (
-    callbackData.startsWith('pref_') ||
     callbackData.startsWith('add_friend_') ||
     callbackData === 'onboarding_skip_friends'
   ) {
@@ -192,11 +250,7 @@ export async function handleCallbackAction(
           channel,
           userId,
           `[onboarding_callback] ${callbackData}`,
-          {
-            bypassOnboarding: true,
-            onboardingResult: result,
-            lightweightOnboarding: true,
-          },
+          { bypassOnboarding: true, onboardingResult: result, lightweightOnboarding: true },
         )
         return {
           text: generated.text,
