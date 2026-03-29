@@ -200,7 +200,7 @@ export async function handleCallbackAction(
       const value = parts.slice(2).join('_')
       const category = PREF_CATEGORY_MAP[prefix]
 
-      if (category && value && user.onboardingComplete) {
+      if (category && value && user.authenticated) {
         // Post-onboarding: save directly, skip Alpha entirely
         const { getPool } = await import('./session-store.js')
         const pool = getPool()
