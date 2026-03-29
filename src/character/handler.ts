@@ -958,7 +958,7 @@ export async function handleMessage(
             toolResultStr = typeof execResult.data === 'string'
               ? execResult.data
               : JSON.stringify(execResult.data)
-            toolRawData = (execResult as any).raw ?? null
+            toolRawData = execResult.data ?? null
             toolMediaDirective = (execResult as any).mediaDirective ?? null
             if (routeDecision.toolName) {
               rememberToolContext(
@@ -1040,7 +1040,7 @@ export async function handleMessage(
 
           if (proactiveExec.success && proactiveExec.data) {
             routeDecision = { useTool: true, toolName: proactiveToolName, toolParams: proactiveToolParams }
-            toolRawData = (proactiveExec as any).raw ?? null
+            toolRawData = proactiveExec.data ?? null
             toolMediaDirective = (proactiveExec as any).mediaDirective ?? null
             rememberToolContext(user.userId, extractToolMediaContext(proactiveToolName, toolRawData), toolMediaDirective)
             const data = typeof proactiveExec.data === 'string' ? proactiveExec.data : JSON.stringify(proactiveExec.data)
