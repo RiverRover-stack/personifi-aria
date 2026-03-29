@@ -21,9 +21,13 @@ export const HYSTERESIS_BUFFER = 5
 export const SIGNAL_WEIGHTS = {
   urgency: 14,
   desire: 10,
-  rejection: -18,
+  rejection: -30,       // spec: -30 (was incorrectly -18)
   fastReply: 8,
   topicPersistence: 7,
+  positive: 20,         // user engages positively with a proactive message
+  toolCommitment: 22,   // user commits to a tool action ("book it", "go ahead")
+  ignoredProactive: -12, // user ignores a proactive message (no reply within window)
+  slowReply: -5,        // user takes > 10 min to reply
 } as const
 
 export const CLASSIFIER_SIGNAL_WEIGHTS: Record<ClassifierUserSignal, number> = {

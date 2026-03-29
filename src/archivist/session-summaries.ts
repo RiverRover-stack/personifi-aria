@@ -21,6 +21,7 @@ import { archiveSession, type ArchivableMessage } from './s3-archive.js'
 import { withGroqRetry } from '../utils/retry.js'
 import { sanitizeInput } from '../character/sanitize.js'
 import { logger } from '../logger.js'
+import { extractPlansFromSummary } from './plan-extractor.js'
 
 const log = logger.child({ module: 'session-summaries' })
 
@@ -144,6 +145,11 @@ export async function summarizeSession(session: SessionRow): Promise<string | nu
         userId,
         `[Session summary] ${summaryText}`,
         [] // No history for the summary itself
+    )
+
+    // Step 6 — Extract plans from summary (fire-and-forget)
+    extractPlansFromSummary(userId, sessionId, summaryText).catch(err =>
+        console.warn('[Archivist] Plan extraction failed:', (err as Error).message)
     )
 
     log.info(

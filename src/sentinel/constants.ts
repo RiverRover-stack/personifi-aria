@@ -54,4 +54,7 @@ export const COLLECTOR_INTERVALS: Record<string, number> = {
     session_cleanup:   5,   // was */5m  cron — runs every 5 ticks
     mess_menu:        30,   // Phase 5: hostel meal windows change per meal bucket — every 30 ticks
     local_event:      60,   // Phase 5: upcoming events (next 3 days) — hourly check
+    plan_reminder:    10,   // Phase 2: plan reminders — every 10 ticks (~10 minutes)
+    interest_intent:  10,   // Phase 2: interest intents — every 10 ticks (~10 minutes)
+    session_pruner: 10080,  // Weekly digest + prune — every 10080 ticks (7 days × 24h × 60m)
 }

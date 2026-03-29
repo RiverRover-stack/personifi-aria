@@ -50,7 +50,22 @@ function defaultRecord(userId: string, now: Date): PulseRecord {
 
 export class PulseService {
   private readonly cache = new Map<string, PulseRecord>()
+  private readonly cacheTimestamps = new Map<string, number>()
   private readonly locks = new Map<string, Promise<unknown>>()
+
+  // Evict cache entries older than 10 minutes to prevent unbounded memory growth
+  // at scale (thousands of users). Each entry is ~1KB so 10k users = ~10MB max.
+  private static readonly CACHE_TTL_MS = 10 * 60 * 1000
+
+  private evictStaleCache(): void {
+    const now = Date.now()
+    for (const [userId, ts] of this.cacheTimestamps) {
+      if (now - ts > PulseService.CACHE_TTL_MS) {
+        this.cache.delete(userId)
+        this.cacheTimestamps.delete(userId)
+      }
+    }
+  }
 
   async recordEngagement(input: PulseInput): Promise<PulseRecord> {
     const previous = this.locks.get(input.userId) ?? Promise.resolve()
@@ -100,6 +115,7 @@ export class PulseService {
 
     await this.persistRecord(next)
     this.cache.set(input.userId, next)
+    this.cacheTimestamps.set(input.userId, Date.now())
 
     // Sync engagement state to weighted metrics record (Issue #93)
     // Fire-and-forget via setImmediate — never block the scoring path with memory writes
@@ -143,7 +159,17 @@ export class PulseService {
     return record.state
   }
 
+  /** Get the numeric pulse score (0-100) for a user. Returns 0 if no record exists. */
+  async getScore(userId: string): Promise<number> {
+    const record = (await this.loadRecord(userId)) ?? null
+    if (!record) return 0
+    return record.score
+  }
+
   private async loadRecord(userId: string): Promise<PulseRecord | null> {
+    // Evict stale entries on every load (amortised O(n) but n is bounded by active users)
+    this.evictStaleCache()
+
     const cached = this.cache.get(userId)
     if (cached) return cached
 
@@ -169,6 +195,7 @@ export class PulseService {
       signalHistory: normalizeHistory(row.signal_history),
     }
     this.cache.set(userId, normalized)
+    this.cacheTimestamps.set(userId, Date.now())
     return normalized
   }
 

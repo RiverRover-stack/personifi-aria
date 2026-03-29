@@ -19,6 +19,7 @@ import type { FestivalStimulusState } from './festival-stimulus.js'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type StimulusType = 'weather' | 'traffic' | 'festival' | 'food' | 'event'
+    | 'plan_reminder' | 'interest_intent' | 'topic_followup' | 'social_convergence'
 
 export interface StimulusAction {
     type: StimulusType

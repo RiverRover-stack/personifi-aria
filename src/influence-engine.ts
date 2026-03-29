@@ -1,3 +1,4 @@
+/** @deprecated Architecture-killed. Do not add new imports. Will be removed after fusion-engine full rollout. */
 /**
  * Influence Strategy Engine (#66)
  *

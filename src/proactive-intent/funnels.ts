@@ -99,6 +99,27 @@ export const FUNNEL_DEFINITIONS: FunnelDefinition[] = [
 ]
 export const FUNNEL_BY_KEY = new Map(FUNNEL_DEFINITIONS.map(funnel => [funnel.key, funnel]))
 
+// ─── Action Checklist Funnel ─────────────────────────────────────────────────
+
+export const actionChecklistFunnel: FunnelDefinition = {
+    key: 'action_checklist_general',
+    category: ContentCategory.FOOD_DISCOVERY,
+    hashtag: '#action',
+    mode: 'action_checklist',
+    minPulseState: 'ENGAGED',
+    minPulse: 70,
+    cooldownMinutes: 30,
+    preferenceKeywords: [],
+    goalKeywords: [],
+    steps: [
+        {
+            id: 'checklist',
+            text: "Here's what I can do for you right now. Tap to select, then hit Go ✅",
+            checklistItems: [], // populated dynamically by Alpha
+        },
+    ],
+}
+
 // ─── Hook Templates ─────────────────────────────────────────────────────────
 // Per category × phase. {topic} is replaced with the topic text at runtime.
 

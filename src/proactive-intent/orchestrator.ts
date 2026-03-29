@@ -1,5 +1,5 @@
 import { getPool } from '../character/session-store.js'
-import { FUNNEL_BY_KEY, generateFunnelFromTopic } from './funnels.js'
+import { FUNNEL_BY_KEY, generateFunnelFromTopic, actionChecklistFunnel } from './funnels.js'
 import { recordFunnelEvent } from './analytics.js'
 import { evaluateCallback, evaluateReply } from './funnel-state.js'
 import { loadIntentContext, selectFunnelForUserAsync } from './intent-selector.js'
@@ -12,6 +12,7 @@ import type {
   FunnelReplyResult,
   FunnelStartResult,
   FunnelStatus,
+  ChecklistItem,
 } from './types.js'
 import type { TopicIntent, TopicPhase } from '../topic-intent/types.js'
 
@@ -463,6 +464,183 @@ export async function handleFunnelCallback(
   }
 
   return { text: 'Understood. If you want to continue, choose an option or send a quick reply.' }
+}
+
+// ─── Action Checklist ─────────────────────────────────────────────────────────
+
+const CHECKLIST_CONTEXT_KEY = 'action_checklist'
+
+/**
+ * Start an action checklist funnel with the given items.
+ * Returns false if a funnel is already active for this user.
+ */
+export async function tryStartActionChecklist(
+    platformUserId: string,
+    chatId: string,
+    items: ChecklistItem[],
+): Promise<boolean> {
+    const active = await getActiveFunnel(platformUserId)
+    if (active) return false
+
+    const pool = getPool()
+    const { rows: userRows } = await pool.query<{ user_id: string }>(
+        `SELECT user_id FROM users WHERE platform_user_id = $1 LIMIT 1`,
+        [platformUserId],
+    ).catch(() => ({ rows: [] as { user_id: string }[] }))
+
+    const internalUserId = userRows[0]?.user_id ?? platformUserId
+
+    const { rows } = await pool.query<FunnelRow>(
+        `INSERT INTO proactive_funnels
+           (platform_user_id, internal_user_id, chat_id, funnel_key, status, current_step_index, context, last_event_at)
+         VALUES ($1, $2, $3, $4, 'ACTIVE', 0, $5::jsonb, NOW())
+         RETURNING id, platform_user_id, internal_user_id, chat_id, funnel_key, status,
+                   current_step_index, context, last_event_at, created_at, updated_at`,
+        [
+            platformUserId,
+            internalUserId,
+            chatId,
+            actionChecklistFunnel.key,
+            JSON.stringify({ checklistItems: items, selectedItems: [] }),
+        ],
+    )
+    const instance = toFunnelInstance(rows[0])
+    scheduleInMemoryExpiry(instance.id)
+
+    // Send the checklist message
+    await sendChecklistMessage(chatId, actionChecklistFunnel.steps[0].text, items, [])
+    await safeRecordEvent(instance.id, platformUserId, 'funnel_started', 0, { funnelKey: actionChecklistFunnel.key })
+    return true
+}
+
+async function sendChecklistMessage(
+    chatId: string,
+    text: string,
+    items: ChecklistItem[],
+    selectedIds: string[],
+): Promise<boolean> {
+    const token = process.env.TELEGRAM_BOT_TOKEN
+    if (!token) return false
+
+    const keyboard = items.map(item => [{
+        text: (selectedIds.includes(item.id) ? '✅ ' : '☐ ') + item.label,
+        callback_data: `checklist:${actionChecklistFunnel.key}:${item.id}:toggle`,
+    }])
+
+    if (selectedIds.length > 0) {
+        keyboard.push([{
+            text: 'Go ✅',
+            callback_data: `checklist:${actionChecklistFunnel.key}:execute`,
+        }])
+    }
+
+    const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            chat_id: chatId,
+            text,
+            reply_markup: { inline_keyboard: keyboard },
+        }),
+    })
+    return resp.ok
+}
+
+async function editChecklistMessage(
+    chatId: string,
+    messageId: number,
+    items: ChecklistItem[],
+    selectedIds: string[],
+): Promise<void> {
+    const token = process.env.TELEGRAM_BOT_TOKEN
+    if (!token) return
+
+    const keyboard = items.map(item => [{
+        text: (selectedIds.includes(item.id) ? '✅ ' : '☐ ') + item.label,
+        callback_data: `checklist:${actionChecklistFunnel.key}:${item.id}:toggle`,
+    }])
+
+    if (selectedIds.length > 0) {
+        keyboard.push([{
+            text: 'Go ✅',
+            callback_data: `checklist:${actionChecklistFunnel.key}:execute`,
+        }])
+    }
+
+    await fetch(`https://api.telegram.org/bot${token}/editMessageReplyMarkup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: { inline_keyboard: keyboard },
+        }),
+    })
+}
+
+/**
+ * Handle a checklist callback (toggle item or execute).
+ * Returns pendingActions when user hits "Go".
+ */
+export async function handleChecklistCallback(
+    platformUserId: string,
+    callbackData: string,
+    messageId?: number,
+): Promise<FunnelCallbackResult | null> {
+    // Format: checklist:funnelKey:itemIdOrAction:toggle|execute
+    const parts = callbackData.split(':')
+    if (parts.length < 3 || parts[0] !== 'checklist') return null
+
+    const action = parts[parts.length - 1] // 'toggle' or 'execute'
+    const itemId = parts.length === 4 ? parts[2] : null
+
+    const active = await getActiveFunnel(platformUserId)
+    if (!active || active.funnelKey !== actionChecklistFunnel.key) return null
+
+    const pool = getPool()
+    const ctx = active.context as { checklistItems: ChecklistItem[]; selectedItems: string[] }
+    const items: ChecklistItem[] = ctx.checklistItems ?? []
+    let selectedIds: string[] = ctx.selectedItems ?? []
+
+    if (action === 'toggle' && itemId) {
+        // Toggle selection
+        if (selectedIds.includes(itemId)) {
+            selectedIds = selectedIds.filter(id => id !== itemId)
+        } else {
+            selectedIds = [...selectedIds, itemId]
+        }
+
+        // Persist updated selection
+        await pool.query(
+            `UPDATE proactive_funnels SET context = $2::jsonb, updated_at = NOW() WHERE id = $1`,
+            [active.id, JSON.stringify({ ...ctx, selectedItems: selectedIds })],
+        )
+
+        // Edit message in-place
+        if (messageId) {
+            await editChecklistMessage(active.chatId, messageId, items, selectedIds)
+        }
+
+        return { text: '' } // no new message — edit was done in-place
+    }
+
+    if (action === 'execute') {
+        // Build pending actions from selected items
+        const pendingActions = items
+            .filter(item => selectedIds.includes(item.id))
+            .map(item => ({ toolName: item.toolName, toolParams: item.toolParams }))
+
+        clearInMemoryExpiry(active.id)
+        await updateFunnelState(active.id, 'COMPLETED', 0)
+        await safeRecordEvent(active.id, platformUserId, 'funnel_completed', 0, { selectedCount: pendingActions.length })
+
+        return {
+            text: `On it! Running ${pendingActions.length} task${pendingActions.length !== 1 ? 's' : ''} for you...`,
+            pendingActions,
+        }
+    }
+
+    return null
 }
 
 export async function expireStaleIntentFunnels(maxIdleMinutes = 45): Promise<number> {

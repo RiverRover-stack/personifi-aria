@@ -16,6 +16,21 @@ const STOP_WORDS = new Set([
   'please', 'show', 'that', 'the', 'this', 'to', 'we', 'with', 'you', 'your',
 ])
 
+// ─── New signal patterns ──────────────────────────────────────────────────────
+
+const POSITIVE_PATTERNS: RegExp[] = [
+  /\b(thanks|thank you|thx|ty)\b/i,
+  /\b(great|awesome|perfect|nice|love it|that's good|good one)\b/i,
+  /\b(yes|yeah|yep|sure|okay|ok|sounds good|let's go|let's do it)\b/i,
+]
+
+const TOOL_COMMITMENT_PATTERNS: RegExp[] = [
+  /\b(book|order|buy|get|reserve|confirm|go ahead|do it|yes book|yes order)\b/i,
+  /\b(compare|check|find|show|search)\b.*\b(now|please|for me)\b/i,
+]
+
+const SLOW_REPLY_THRESHOLD_SECONDS = 600 // 10 minutes
+
 function hasAnyPattern(message: string, patterns: RegExp[]): boolean {
   return patterns.some(pattern => pattern.test(message))
 }
@@ -72,7 +87,7 @@ export function extractEngagementSignals(input: PulseInput, bedrockSignals?: Bed
       : bedrockUrgency
 
     if (bedrockSignals.desire && desire === 0) {
-      desire = SIGNAL_WEIGHTS.desire * 0.6  // Bedrock detected desire that heuristic missed
+      desire = SIGNAL_WEIGHTS.desire * 0.6
     }
 
     if (bedrockSignals.rejection && rejection === 0) {
@@ -88,15 +103,39 @@ export function extractEngagementSignals(input: PulseInput, bedrockSignals?: Bed
   const overlap = topicOverlap(currentTokens, previousTokens)
   const topicPersistence = overlap >= TOPIC_MATCH_THRESHOLD ? SIGNAL_WEIGHTS.topicPersistence : 0
 
+  // ── New signals ───────────────────────────────────────────────────────────
+  // positive: user responds warmly to a proactive message or general reply
+  const positive = hasAnyPattern(normalizedMessage, POSITIVE_PATTERNS) ? SIGNAL_WEIGHTS.positive : 0
+
+  // toolCommitment: user explicitly commits to a tool action
+  const toolCommitment = hasAnyPattern(normalizedMessage, TOOL_COMMITMENT_PATTERNS) ? SIGNAL_WEIGHTS.toolCommitment : 0
+
+  // slowReply: user took > 10 min to reply (signals disengagement)
+  let slowReply = 0
+  if (previousMessageAt) {
+    const deltaSeconds = (now.getTime() - previousMessageAt.getTime()) / 1000
+    if (deltaSeconds > SLOW_REPLY_THRESHOLD_SECONDS) {
+      slowReply = SIGNAL_WEIGHTS.slowReply
+    }
+  }
+
+  // ignoredProactive: caller sets classifierSignal = 'ignored_proactive' when
+  // Sentinel detects no reply to a FIRE within the cooldown window
+  const ignoredProactive = input.classifierSignal === 'ignored_proactive'
+    ? SIGNAL_WEIGHTS.ignoredProactive
+    : 0
+
   const classifierSignalKey = input.classifierSignal ?? 'normal'
-  const classifierSignal = Object.prototype.hasOwnProperty.call(
+  const classifierSignal = (classifierSignalKey !== 'ignored_proactive' && Object.prototype.hasOwnProperty.call(
     CLASSIFIER_SIGNAL_WEIGHTS,
     classifierSignalKey,
-  )
+  ))
     ? CLASSIFIER_SIGNAL_WEIGHTS[classifierSignalKey as keyof typeof CLASSIFIER_SIGNAL_WEIGHTS]
     : CLASSIFIER_SIGNAL_WEIGHTS.normal
 
-  const scoreDelta = urgency + desire + rejection + fastReply + topicPersistence + classifierSignal
+  const scoreDelta =
+    urgency + desire + rejection + fastReply + topicPersistence +
+    positive + toolCommitment + slowReply + ignoredProactive + classifierSignal
 
   const matchedSignals: string[] = []
   if (urgency !== 0) matchedSignals.push('urgency')
@@ -104,6 +143,10 @@ export function extractEngagementSignals(input: PulseInput, bedrockSignals?: Bed
   if (rejection !== 0) matchedSignals.push('rejection')
   if (fastReply !== 0) matchedSignals.push('fast_reply')
   if (topicPersistence !== 0) matchedSignals.push('topic_persistence')
+  if (positive !== 0) matchedSignals.push('positive')
+  if (toolCommitment !== 0) matchedSignals.push('tool_commitment')
+  if (slowReply !== 0) matchedSignals.push('slow_reply')
+  if (ignoredProactive !== 0) matchedSignals.push('ignored_proactive')
   if (classifierSignal !== 0) matchedSignals.push(`classifier_${classifierSignalKey}`)
   if (bedrockSignals) matchedSignals.push('bedrock_enhanced')
 

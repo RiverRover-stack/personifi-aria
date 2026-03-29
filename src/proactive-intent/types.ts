@@ -2,6 +2,7 @@ import type { ContentCategory } from '../media/contentIntelligence.js'
 
 export type PulseState = 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE'
 export type FunnelStatus = 'ACTIVE' | 'COMPLETED' | 'ABANDONED' | 'EXPIRED'
+export type FunnelMode = 'sequential' | 'action_checklist'
 export type FunnelEventType =
   | 'funnel_started'
   | 'step_sent'
@@ -18,10 +19,18 @@ export interface FunnelChoice {
   action: string
 }
 
+export interface ChecklistItem {
+  id: string          // unique key e.g. 'compare_rides', 'search_food'
+  label: string       // display text e.g. "🚕 Compare Uber vs Rapido prices"
+  toolName: string    // maps to a tool in tool-executor.ts
+  toolParams: Record<string, unknown>
+}
+
 export interface FunnelStep {
   id: string
   text: string
   choices?: FunnelChoice[]
+  checklistItems?: ChecklistItem[]   // only used in action_checklist mode
   nextOnChoice?: Record<string, number>
   intentKeywords?: string[]
   nextOnAnyReply?: number | null
@@ -33,7 +42,9 @@ export interface FunnelDefinition {
   key: string
   category: ContentCategory
   hashtag: string
+  mode?: FunnelMode   // default: 'sequential'
   minPulseState: Extract<PulseState, 'ENGAGED' | 'PROACTIVE'>
+  minPulse?: number   // numeric pulse score threshold (for action_checklist mode)
   cooldownMinutes: number
   preferenceKeywords: string[]
   goalKeywords: string[]
@@ -87,4 +98,5 @@ export interface FunnelReplyResult {
 export interface FunnelCallbackResult {
   text: string
   choices?: FunnelChoice[]
+  pendingActions?: Array<{ toolName: string; toolParams: Record<string, unknown> }>
 }

@@ -97,7 +97,9 @@ export function fusionProactiveDecision(
     }
 
     // Time window check: only fire proactive messages 8am-10pm IST
-    const istHour = (now.getUTCHours() + 5) % 24 + (now.getUTCMinutes() + 30) / 60
+    // Correct IST conversion: total UTC minutes + 330 (5h30m offset), mod 1440, then divide to get float hour
+    const istMinutes = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440
+    const istHour = istMinutes / 60
     if (istHour < 8 || istHour >= 22) {
         if (score >= mode.threshold) {
             return {
