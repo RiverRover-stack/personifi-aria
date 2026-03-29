@@ -163,6 +163,36 @@ async function scoreWithBedrock(prompt: string): Promise<{ content: string; late
     return { content, latencyMs }
 }
 
+// ─── Groq Sentinel (primary non-Bedrock path) ────────────────────────────────
+
+async function scoreWithGroqSentinel(prompt: string): Promise<{ content: string; latencyMs: number }> {
+    const apiKey = process.env.GROQ_SENTINEL_API_KEY
+    if (!apiKey) throw new Error('GROQ_SENTINEL_API_KEY not set')
+
+    const model = process.env.GROQ_SENTINEL_MODEL ?? 'llama3-8b-8192'
+    const start = Date.now()
+
+    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 150,
+            temperature: 0.1,
+        }),
+    })
+
+    if (!resp.ok) {
+        const text = await resp.text()
+        throw new Error(`Groq Sentinel error ${resp.status}: ${text.slice(0, 200)}`)
+    }
+
+    const data = await resp.json() as any
+    const content = data.choices?.[0]?.message?.content ?? ''
+    return { content, latencyMs: Date.now() - start }
+}
+
 // ─── Together AI (fallback / batch) ──────────────────────────────────────────
 
 async function scoreWithTogether(prompt: string): Promise<{ content: string; latencyMs: number }> {
@@ -217,6 +247,23 @@ export async function sentinelScore(input: SentinelScoringInput): Promise<Sentin
             return { ...parsed, provider: 'bedrock', latencyMs }
         } catch (err) {
             log.warn({ err, stimulusKey: input.stimulusKey }, 'Bedrock failed — falling back to Together AI')
+        }
+    }
+
+    // Groq Sentinel fallback (primary non-AWS path)
+    if (process.env.GROQ_SENTINEL_API_KEY) {
+        try {
+            const { content, latencyMs } = await scoreWithGroqSentinel(prompt)
+            const parsed = parseScoringResponse(content)
+
+            log.info(
+                { ...parsed, latencyMs, stimulusKey: input.stimulusKey },
+                `[Sentinel/Provider] Using groq-sentinel. Result: ${parsed.action} score=${parsed.score.toFixed(2)}`
+            )
+
+            return { ...parsed, provider: 'groq-sentinel', latencyMs }
+        } catch (err) {
+            log.warn({ err, stimulusKey: input.stimulusKey }, 'Groq Sentinel failed — trying Together AI')
         }
     }
 

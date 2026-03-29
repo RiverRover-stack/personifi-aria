@@ -48,11 +48,11 @@ fi
 # Grouped by category for the dashboard.
 
 CORE_KEYS=(
-    "GROQ_API_KEY|Groq LLM (console.groq.com)|required"
-    "GEMINI_API_KEY|Google Gemini (LLM fallback)|required"
     "DATABASE_URL|PostgreSQL connection URL|required"
     "GOOGLE_PLACES_API_KEY|Google Places API key (primary; optional if GOOGLE_MAPS_API_KEY is set)|optional"
-    "GOOGLE_MAPS_API_KEY|Google Maps API key (can be used as single key for maps/places stack)|optional"
+    "GOOGLE_MAPS_API_KEY|Google Maps API key (Routes, Geocoding, AQI, Traffic — can reuse Places key)|optional"
+    "JINA_API_KEY|Jina AI Embeddings — memory search (jina.ai, 1M tokens free)|required"
+    "REDIS_URL|Redis URL — session cache (redis://localhost:6379 for local)|required"
 )
 
 CHANNEL_KEYS=(
@@ -64,8 +64,9 @@ CHANNEL_KEYS=(
 )
 
 EMBEDDING_KEYS=(
-    "JINA_API_KEY|Jina AI Embeddings (primary)|required"
-    "HF_API_KEY|HuggingFace Embeddings (fallback)|optional"
+    "HF_API_KEY|HuggingFace Embeddings (fallback if Jina fails)|optional"
+    "GEMINI_API_KEY|Google Gemini (LLM fallback — aistudio.google.com)|optional"
+    "GROQ_API_KEY|Groq legacy tierManager safety-net (can reuse GROQ_ALPHA_API_KEY)|optional"
 )
 
 TRAVEL_KEYS=(
@@ -89,12 +90,31 @@ MCP_KEYS=(
     "ZOMATO_MCP_REFRESH_TOKEN|Zomato MCP Refresh Token|optional"
 )
 
-# Alpha LLM provider chain: Together → Fireworks → Groq (auto-fallback)
-# For testing with Groq only: leave Together + Fireworks empty — Groq is the fallback.
-# For production: set Together as primary (600 rpm, best function-calling accuracy).
+# ── LLM chains ──────────────────────────────────────────────────────────────
+#   Alpha  (conversational): Bedrock → Groq Alpha  → Together → Fireworks → Groq tierManager
+#   Sentinel (background):   Bedrock → Groq Sentinel → Together → DROP
+#
+# For LOCAL TESTING:  fill GROQ_ALPHA_API_KEY + GROQ_SENTINEL_API_KEY (AWS_ENABLED stays false)
+# For PRODUCTION:     fill AWS keys + set AWS_ENABLED=true (Groq becomes fallback only)
+# Get two free Groq keys at: console.groq.com/keys
+
+GROQ_LLM_KEYS=(
+    "GROQ_ALPHA_API_KEY|Groq key for Alpha (70B conversational + tool calling)|required"
+    "GROQ_SENTINEL_API_KEY|Groq key for Sentinel (8B background scoring — can be same key)|required"
+)
+
+AWS_KEYS=(
+    "AWS_ENABLED|Set to 'true' to activate Bedrock as primary for Alpha + Sentinel|optional"
+    "AWS_ACCESS_KEY_ID|AWS credentials (IAM user with Bedrock + DynamoDB access)|optional"
+    "AWS_SECRET_ACCESS_KEY|AWS secret key|optional"
+    "AWS_BEDROCK_REGION|Bedrock region (e.g. ap-south-1 or us-east-1)|optional"
+    "AWS_BEDROCK_MODEL_ID|Sentinel scoring model (default: anthropic.claude-3-haiku-20240307-v1:0)|optional"
+    "AWS_BEDROCK_ALPHA_MODEL_ID|Alpha conversational model (default: anthropic.claude-3-haiku-20240307-v1:0)|optional"
+)
+
 ALPHA_PROVIDER_KEYS=(
-    "TOGETHER_API_KEY|Together AI — primary Alpha provider (api.together.xyz)|optional"
-    "FIREWORKS_API_KEY|Fireworks AI — secondary Alpha provider (fireworks.ai)|optional"
+    "TOGETHER_API_KEY|Together AI — Alpha fallback after Groq (api.together.xyz)|optional"
+    "FIREWORKS_API_KEY|Fireworks AI — Alpha fallback after Together (fireworks.ai)|optional"
 )
 
 # Known placeholder values (from .env.example defaults that aren't real keys)
@@ -203,16 +223,18 @@ show_dashboard() {
 
     print_category "🔑 Core Services" "${CORE_KEYS[@]}"
     print_category "📱 Channels (enable at least one)" "${CHANNEL_KEYS[@]}"
-    print_category "🧠 Embedding Services" "${EMBEDDING_KEYS[@]}"
+    print_category "🤖 Groq LLM Keys (required for local testing)" "${GROQ_LLM_KEYS[@]}"
+    print_category "☁️  AWS / Bedrock (production primary — skip for local testing)" "${AWS_KEYS[@]}"
+    print_category "🧠 Embedding & Fallback LLMs" "${EMBEDDING_KEYS[@]}"
     print_category "✈️  Travel Tools" "${TRAVEL_KEYS[@]}"
     print_category "🍽️  Food & Grocery MCP" "${MCP_KEYS[@]}"
-    print_category "🤖 Alpha LLM Providers (Together→Fireworks→Groq auto-chain)" "${ALPHA_PROVIDER_KEYS[@]}"
+    print_category "🔁 Alpha LLM Fallbacks (Bedrock→Groq→Together→Fireworks chain)" "${ALPHA_PROVIDER_KEYS[@]}"
 
     # Summary
     local total_set=0
     local total_required=0
     local required_set=0
-    local all_keys=("${CORE_KEYS[@]}" "${CHANNEL_KEYS[@]}" "${EMBEDDING_KEYS[@]}" "${TRAVEL_KEYS[@]}" "${MCP_KEYS[@]}" "${ALPHA_PROVIDER_KEYS[@]}")
+    local all_keys=("${CORE_KEYS[@]}" "${CHANNEL_KEYS[@]}" "${GROQ_LLM_KEYS[@]}" "${AWS_KEYS[@]}" "${EMBEDDING_KEYS[@]}" "${TRAVEL_KEYS[@]}" "${MCP_KEYS[@]}" "${ALPHA_PROVIDER_KEYS[@]}")
 
     for entry in "${all_keys[@]}"; do
         IFS='|' read -r key desc importance <<< "$entry"
@@ -242,7 +264,7 @@ show_dashboard() {
 # ─── Set Missing Keys ────────────────────────────────────────────────────────
 
 prompt_missing_keys() {
-    local all_keys=("${CORE_KEYS[@]}" "${CHANNEL_KEYS[@]}" "${EMBEDDING_KEYS[@]}" "${TRAVEL_KEYS[@]}" "${MCP_KEYS[@]}" "${ALPHA_PROVIDER_KEYS[@]}")
+    local all_keys=("${CORE_KEYS[@]}" "${CHANNEL_KEYS[@]}" "${GROQ_LLM_KEYS[@]}" "${AWS_KEYS[@]}" "${EMBEDDING_KEYS[@]}" "${TRAVEL_KEYS[@]}" "${MCP_KEYS[@]}" "${ALPHA_PROVIDER_KEYS[@]}")
     local missing_count=0
 
     # Count missing
@@ -292,7 +314,7 @@ prompt_missing_keys() {
 # ─── Set Specific Key ────────────────────────────────────────────────────────
 
 set_specific_key() {
-    local all_keys=("${CORE_KEYS[@]}" "${CHANNEL_KEYS[@]}" "${EMBEDDING_KEYS[@]}" "${TRAVEL_KEYS[@]}" "${MCP_KEYS[@]}" "${ALPHA_PROVIDER_KEYS[@]}")
+    local all_keys=("${CORE_KEYS[@]}" "${CHANNEL_KEYS[@]}" "${GROQ_LLM_KEYS[@]}" "${AWS_KEYS[@]}" "${EMBEDDING_KEYS[@]}" "${TRAVEL_KEYS[@]}" "${MCP_KEYS[@]}" "${ALPHA_PROVIDER_KEYS[@]}")
 
     echo ""
     echo -e "  ${BOLD}Available keys:${RESET}"
